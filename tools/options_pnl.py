@@ -121,10 +121,9 @@ class LegFrame(ttk.Frame):
     def get_snapshot(self) -> Optional[Dict[str, Any]]:
         return getattr(self, "_snapshot", None)
     def _required_snapshot_keys(self) -> tuple:
-        # Fields required for a “complete” leg snapshot
+        # Fields required for a “complete” leg snapshot (prices handled leniently elsewhere)
         return (
             "OPT_FINANCE_RT", "OPT_DIV_YIELD",
-            "PX_BID", "PX_MID", "PX_ASK",
             "DELTA_MID_RT", "GAMMA_MID_RT", "VEGA_MID_RT",
             "IVOL_MID_RT", "THETA_MID_RT",
         )
@@ -132,9 +131,13 @@ class LegFrame(ttk.Frame):
         snap = getattr(self, "_snapshot", None)
         if not isinstance(snap, dict):
             return False
+        # Require greeks/finance fields
         for k in self._required_snapshot_keys():
             if k not in snap or snap.get(k) is None:
                 return False
+        # Require at least one of bid/mid/ask to be available
+        if not any(snap.get(k) is not None for k in ("PX_BID", "PX_MID", "PX_ASK")):
+            return False
         return True
     def set_stats_from_snapshot(self, snap: Dict[str, Any]):
         """Update stats labels from a Bloomberg snapshot dict, formatting to 3 decimals.
@@ -831,18 +834,13 @@ class OptionsPnL(tk.Toplevel):
             return None
     def _update_leg_option_prices(self):
         """For each leg with complete selections, fetch snapshot and set option price.
-        Price rule: (PX_ASK + PX_MID) / 2. Missing fields default to 0.
+        Implements normalization and user prompting for missing bid/mid/ask.
         Caches snapshots in self.opt_snapshots keyed by description.
         """
         if self.chain_tree is None or not getattr(self, 'bbg', None):
             return
         # Always refresh snapshot cache on each Update Data click
         self.opt_snapshots = {}
-        def _to_float(x):
-            try:
-                return float(x)
-            except Exception:
-                return 0.0
         for leg in getattr(self, 'legs', []):
             try:
                 sel_maturity = (leg.maturity.get() or "").strip()
@@ -875,24 +873,169 @@ class OptionsPnL(tk.Toplevel):
                 try:
                     # cache a deep copy so we never mutate the original pulled from BBG
                     self.opt_snapshots[desc] = copy.deepcopy(snap)
- 
                     # if you pass it into the leg, pass a copy too
                     leg.set_snapshot(copy.deepcopy(snap))
                 except Exception:
                     print(f"[WARNING] Failed to cache a deep copy of snap: {snap}")
                 print(f"[SNAPSHOT] fetched for: {desc}")
                 print(f"[SNAPSHOT] payload: {snap}")
-                # cache and compute price
-                self.opt_snapshots[desc] = snap
-                px_mid = _to_float(snap.get("PX_MID", 0))
-                px_ask = _to_float(snap.get("PX_ASK", 0))
-                price = (px_mid + px_ask) / 2.0
-                print(f"[SNAPSHOT] computed option price = (PX_MID {px_mid} + PX_ASK {px_ask}) / 2 -> {price:.4f}")
-                # after computing px_mid/px_ask and price
+                # --- Normalize/compute missing bid/mid/ask per rules ---
+                def _sf(v):
+                    try:
+                        if v is None:
+                            return None
+                        f = float(v)
+                        if f != f:  # NaN
+                            return None
+                        return f
+                    except Exception:
+                        return None
+
+                bid = _sf(snap.get("PX_BID"))
+                mid = _sf(snap.get("PX_MID"))
+                ask = _sf(snap.get("PX_ASK"))
+
+                # If all three are missing -> prompt for user input; raise message if cancel
+                if bid is None and mid is None and ask is None:
+                    try:
+                        val = simpledialog.askfloat(
+                            title="Missing Option Prices",
+                            prompt=(
+                                "No bid/mid/ask reported for this option.\n\n"
+                                f"{desc}\n\n"
+                                "Please input a unit price to continue:"
+                            ),
+                            parent=self,
+                            minvalue=0.0,
+                        )
+                    except Exception:
+                        val = None
+                    if val is None:
+                        # User canceled: mark leg as incomplete and continue to next leg
+                        try:
+                            leg.set_option_price(None)
+                            leg.clear_stats()
+                            leg.clear_snapshot()
+                        except Exception:
+                            pass
+                        continue
+                    # Store user-entered price as MID only
+                    mid = float(val)
+                    snap["PX_MID"] = mid
+
+                # If only MID present (no BID/ASK) -> warn but continue
+                if mid is not None and bid is None and ask is None:
+                    try:
+                        messagebox.showwarning(
+                            "Only MID available",
+                            (
+                                "Only PX_MID is available for this option; no BID or ASK were reported.\n\n"
+                                f"{desc}\n\nContinuing with MID."
+                            ),
+                            parent=self,
+                        )
+                    except Exception:
+                        pass
+
+                # If BID is None -> assume zero
+                if bid is None:
+                    bid = 0.0
+                    snap["PX_BID"] = 0.0
+
+                # If MID is None but have BID and ASK -> compute MID
+                if mid is None and (bid is not None) and (ask is not None):
+                    mid = (bid + ask) / 2.0
+                    snap["PX_MID"] = mid
+
+                # If ASK is zero or None but have BID and MID -> compute ASK = max(0, 2*MID - BID)
+                if (ask is None or ask == 0.0) and (bid is not None) and (mid is not None):
+                    ask = max(0.0, 2.0 * mid - bid)
+                    snap["PX_ASK"] = ask
+
+                # --- Compute display price using clarified BUY/SELL rules ---
+                # BUY (qty > 0): price = (MID + ASK) / 2
+                #   If BID was missing originally and ASK exists, ignore the provided MID:
+                #     set BID := 0, recompute MID := (BID + ASK)/2, then price := (MID + ASK)/2
+                # SELL (qty < 0): price = (BID + MID) / 2
+                #   If MID missing but BID & ASK exist, recompute MID := (BID + ASK)/2
                 try:
-                    leg.set_snapshot(snap)
+                    qty_val = int(leg.qty_var.get())
                 except Exception:
-                    pass              
+                    qty_val = 1  # default BUY if unspecified
+
+                bid_was_missing = (snap.get("PX_BID") is None)
+
+                # Local copies we can mutate
+                b = bid
+                m = mid
+                a = ask
+
+                # BUY path first (qty > 0)
+                if qty_val > 0:
+                    # If BID was missing and we have ASK, ignore any provided MID and recompute from BID (0) & ASK
+                    if bid_was_missing and a is not None:
+                        b = 0.0
+                        snap["PX_BID"] = 0.0
+                        m = (b + a) / 2.0
+                        snap["PX_MID"] = m
+                    # If MID missing but BID & ASK exist, recompute MID
+                    if (m is None) and (b is not None) and (a is not None):
+                        m = (b + a) / 2.0
+                        snap["PX_MID"] = m
+                    # If ASK missing but have MID & BID, infer ASK = max(0, 2*MID - BID)
+                    if (a is None) and (m is not None) and (b is not None):
+                        a = max(0.0, 2.0 * m - b)
+                        snap["PX_ASK"] = a
+                    # Compute BUY price
+                    if (m is not None) and (a is not None):
+                        price = (m + a) / 2.0
+                        dbg = f"(MID {m} + ASK {a})/2"
+                    elif m is not None:
+                        price = float(m)
+                        dbg = f"MID {m} (fallback)"
+                    elif a is not None:
+                        price = float(a)
+                        dbg = f"ASK {a} (fallback)"
+                    elif b is not None:
+                        price = float(b)
+                        dbg = f"BID {b} (fallback)"
+                    else:
+                        price = 0.0
+                        dbg = "0.0 (no prices)"
+                else:
+                    # SELL path (qty <= 0): prefer (BID + MID)/2
+                    # If MID missing but BID & ASK exist, recompute MID
+                    if (m is None) and (b is not None) and (a is not None):
+                        m = (b + a) / 2.0
+                        snap["PX_MID"] = m
+                    # If BID missing but have MID & ASK, infer BID = max(0, 2*MID - ASK)
+                    if (b is None) and (m is not None) and (a is not None):
+                        b = max(0.0, 2.0 * m - a)
+                        snap["PX_BID"] = b
+                    # Compute SELL price
+                    if (b is not None) and (m is not None):
+                        price = (b + m) / 2.0
+                        dbg = f"(BID {b} + MID {m})/2"
+                    elif m is not None:
+                        price = float(m)
+                        dbg = f"MID {m} (fallback)"
+                    elif b is not None:
+                        price = float(b)
+                        dbg = f"BID {b} (fallback)"
+                    elif a is not None:
+                        price = float(a)
+                        dbg = f"ASK {a} (fallback)"
+                    else:
+                        price = 0.0
+                        dbg = "0.0 (no prices)"
+
+                print(f"[SNAPSHOT] computed option price {dbg} -> {price:.4f}")
+
+                # Save normalized snapshot back to the leg
+                try:
+                    leg.set_snapshot(copy.deepcopy(snap))
+                except Exception:
+                    pass
                 leg.set_option_price(f"{price:.2f}")
                 try:
                     leg.set_stats_from_snapshot(snap)

@@ -4,6 +4,126 @@ import math
 from copy import deepcopy
 
 class ScenarioRunner:
+    def _sf(self, v):
+        """Safe float: return float(v) if numeric and finite, else None."""
+        try:
+            f = float(v)
+        except Exception:
+            return None
+        # NaN/inf guard
+        try:
+            if not math.isfinite(f):
+                return None
+        except Exception:
+            if f != f:  # NaN
+                return None
+        return f
+
+    def entry_price_from_snapshot(self) -> float:
+        """
+        Compute the original unit price using BUY/SELL-aware rules to mirror the UI:
+          - BUY (qty > 0): price = (MID + ASK) / 2
+              * If BID was missing but ASK exists: set BID := 0, recompute MID := (BID + ASK)/2, then price := (MID + ASK)/2
+              * If MID missing but BID & ASK exist: recompute MID := (BID + ASK)/2
+              * If ASK missing but BID & MID exist: infer ASK := max(0, 2*MID - BID)
+          - SELL (qty < 0): price = (BID + MID) / 2
+              * If MID missing but BID & ASK exist: recompute MID := (BID + ASK)/2
+              * If BID missing but MID & ASK exist: infer BID := max(0, 2*MID - ASK)
+        If all three of BID/MID/ASK are missing, raise ValueError.
+        """
+        b = self._sf(self.data.get("PX_BID"))
+        m = self._sf(self.data.get("PX_MID"))
+        a = self._sf(self.data.get("PX_ASK"))
+
+        logs = []
+        b0, m0, a0 = b, m, a
+
+        if b is None and m is None and a is None:
+            raise ValueError("Missing option price: need at least one of PX_BID, PX_MID, PX_ASK.")
+
+        qty = int(self.data.get("QTY", 1))
+
+        if qty > 0:
+            # BUY path
+            # If BID missing but ASK exists -> set BID=0 and recompute MID from BID/ASK
+            if b is None and a is not None:
+                b = 0.0
+                m = (b + a) / 2.0 if a is not None else None
+                logs.append(f"[EntryPrice][BUY] BID missing → assume BID=0.0; recompute MID=(BID+ASK)/2={(b + a)/2.0 if a is not None else 'n/a'}")
+            # If MID missing but have BID & ASK -> recompute MID
+            if m is None and (b is not None) and (a is not None):
+                m = (b + a) / 2.0
+                logs.append(f"[EntryPrice][BUY] MID missing → recompute MID=(BID+ASK)/2={(b + a)/2.0}")
+            # If ASK missing but have BID & MID -> infer ASK
+            if a is None and (m is not None) and (b is not None):
+                a = max(0.0, 2.0 * m - b)
+                logs.append(f"[EntryPrice][BUY] ASK missing → infer ASK=max(0, 2*MID−BID)={a}")
+            # Compute price
+            if (m is not None) and (a is not None):
+                logs.append(f"[EntryPrice][BUY] price=(MID+ASK)/2={(m + a)/2.0} using BID={b}, MID={m}, ASK={a}")
+                if logs:
+                    for _line in logs:
+                        print(_line)
+                return (m + a) / 2.0
+            # Fallbacks
+            if m is not None:
+                logs.append(f"[EntryPrice][BUY] fallback price=MID={m} (ASK/BID unavailable)")
+                if logs:
+                    for _line in logs:
+                        print(_line)
+                return float(m)
+            if a is not None:
+                logs.append(f"[EntryPrice][BUY] fallback price=ASK={a} (MID/BID unavailable)")
+                if logs:
+                    for _line in logs:
+                        print(_line)
+                return float(a)
+            if b is not None:
+                logs.append(f"[EntryPrice][BUY] fallback price=BID={b} (MID/ASK unavailable)")
+                if logs:
+                    for _line in logs:
+                        print(_line)
+                return float(b)
+            # Should not reach here due to earlier check
+            raise ValueError("Unable to compute BUY entry price.")
+        else:
+            # SELL path (qty <= 0)
+            # If MID missing but have BID & ASK -> recompute MID
+            if m is None and (b is not None) and (a is not None):
+                m = (b + a) / 2.0
+                logs.append(f"[EntryPrice][SELL] MID missing → recompute MID=(BID+ASK)/2={(b + a)/2.0}")
+            # If BID missing but have MID & ASK -> infer BID
+            if b is None and (m is not None) and (a is not None):
+                b = max(0.0, 2.0 * m - a)
+                logs.append(f"[EntryPrice][SELL] BID missing → infer BID=max(0, 2*MID−ASK)={b}")
+            # Compute price
+            if (b is not None) and (m is not None):
+                logs.append(f"[EntryPrice][SELL] price=(BID+MID)/2={(b + m)/2.0} using BID={b}, MID={m}, ASK={a}")
+                if logs:
+                    for _line in logs:
+                        print(_line)
+                return (b + m) / 2.0
+            # Fallbacks
+            if m is not None:
+                logs.append(f"[EntryPrice][SELL] fallback price=MID={m} (BID/ASK unavailable)")
+                if logs:
+                    for _line in logs:
+                        print(_line)
+                return float(m)
+            if b is not None:
+                logs.append(f"[EntryPrice][SELL] fallback price=BID={b} (MID/ASK unavailable)")
+                if logs:
+                    for _line in logs:
+                        print(_line)
+                return float(b)
+            if a is not None:
+                logs.append(f"[EntryPrice][SELL] fallback price=ASK={a} (BID/MID unavailable)")
+                if logs:
+                    for _line in logs:
+                        print(_line)
+                return float(a)
+            raise ValueError("Unable to compute SELL entry price.")
+
     def __init__(self, data: Dict):
         """
         data should at least include the keys:
@@ -207,7 +327,7 @@ class ScenarioRunner:
         Profit = Market Value after move - Original Value
         Original Value is calculated as average of PX_MID and PX_ASK times quantity times 100.
         """
-        orig_price = (float(self.data["PX_MID"]) + float(self.data["PX_ASK"])) / 2.0
+        orig_price = self.entry_price_from_snapshot()
         qty = int(self.data.get("QTY", 1))
         opt_type = str(self.data["OPTION_TYPE"]).upper()
         mv_after = self.market_value_after_move()
