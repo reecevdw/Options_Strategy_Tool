@@ -37,6 +37,7 @@ class ScenarioRunner:
 
         logs = []
         b0, m0, a0 = b, m, a
+        EPS = 1e-9
 
         if b is None and m is None and a is None:
             raise ValueError("Missing option price: need at least one of PX_BID, PX_MID, PX_ASK.")
@@ -45,11 +46,24 @@ class ScenarioRunner:
 
         if qty > 0:
             # BUY path
-            # If BID missing but ASK exists -> set BID=0 and recompute MID from BID/ASK
+            # If BID is missing and ASK exists, only ignore/override MID when MID == ASK.
+            # If MID is None: assume BID=0 and synthesize MID from BID/ASK.
+            # If MID present and MID == ASK: ignore reported MID per rule (assume BID=0, recompute MID).
+            # If MID present and MID != ASK: treat MID as true; infer BID = max(0, 2*MID - ASK).
             if b is None and a is not None:
-                b = 0.0
-                m = (b + a) / 2.0 if a is not None else None
-                logs.append(f"[EntryPrice][BUY] BID missing → assume BID=0.0; recompute MID=(BID+ASK)/2={(b + a)/2.0 if a is not None else 'n/a'}")
+                if m is None:
+                    b = 0.0
+                    m = (b + a) / 2.0
+                    logs.append(f"[EntryPrice][BUY] BID missing & MID missing → assume BID=0.0; MID=(BID+ASK)/2={m}")
+                else:
+                    if abs(m - a) <= EPS:
+                        b = 0.0
+                        m = (b + a) / 2.0
+                        logs.append(f"[EntryPrice][BUY] BID missing & MID==ASK ({a}) → ignore MID; assume BID=0.0; MID=(BID+ASK)/2={m}")
+                    else:
+                        inferred_bid = max(0.0, 2.0 * m - a)
+                        b = inferred_bid
+                        logs.append(f"[EntryPrice][BUY] BID missing & MID({m})!=ASK({a}) → infer BID=max(0,2*MID-ASK)={b}")
             # If MID missing but have BID & ASK -> recompute MID
             if m is None and (b is not None) and (a is not None):
                 m = (b + a) / 2.0

@@ -894,6 +894,12 @@ class OptionsPnL(tk.Toplevel):
                 bid = _sf(snap.get("PX_BID"))
                 mid = _sf(snap.get("PX_MID"))
                 ask = _sf(snap.get("PX_ASK"))
+                # --- UI diagnostics + epsilon for float equality ---
+                ui_logs = []
+                def _log(msg):
+                    ui_logs.append(msg)
+                    print(msg)
+                EPS = 1e-9
 
                 # If all three are missing -> prompt for user input; raise message if cancel
                 if bid is None and mid is None and ask is None:
@@ -936,57 +942,58 @@ class OptionsPnL(tk.Toplevel):
                         )
                     except Exception:
                         pass
+                    _log(f"[UI] Only MID available for {desc}; proceeding with MID={mid}")
 
-                # If BID is None -> assume zero
-                if bid is None:
-                    bid = 0.0
-                    snap["PX_BID"] = 0.0
+                # Handle BID-missing cases with nuance:
+                # - If BID is missing and ASK exists:
+                #   * If MID is missing: assume BID=0, set MID=(BID+ASK)/2
+                #   * If MID is present and MID == ASK: ignore reported MID, set BID=0, recompute MID
+                #   * If MID is present and MID != ASK: keep MID as true mid; infer BID = max(0, 2*MID - ASK)
+                if bid is None and ask is not None:
+                    if mid is None:
+                        bid = 0.0
+                        snap["PX_BID"] = 0.0
+                        mid = (bid + ask) / 2.0
+                        snap["PX_MID"] = mid
+                        _log(f"[UI] BID missing & MID missing for {desc} → assume BID=0.0, set MID=(BID+ASK)/2={mid}")
+                    else:
+                        if abs(mid - ask) <= EPS:
+                            bid = 0.0
+                            snap["PX_BID"] = 0.0
+                            mid = (bid + ask) / 2.0
+                            snap["PX_MID"] = mid
+                            _log(f"[UI] BID missing & MID==ASK ({ask}) for {desc} → ignore MID, set BID=0.0, recompute MID={mid}")
+                        else:
+                            inferred_bid = max(0.0, 2.0 * mid - ask)
+                            bid = inferred_bid
+                            snap["PX_BID"] = bid
+                            _log(f"[UI] BID missing & MID({mid})!=ASK({ask}) for {desc} → infer BID=max(0,2*MID-ASK)={bid}")
 
                 # If MID is None but have BID and ASK -> compute MID
                 if mid is None and (bid is not None) and (ask is not None):
                     mid = (bid + ask) / 2.0
                     snap["PX_MID"] = mid
+                    _log(f"[UI] MID missing for {desc} → recompute MID=(BID+ASK)/2={mid}")
 
-                # If ASK is zero or None but have BID and MID -> compute ASK = max(0, 2*MID - BID)
-                if (ask is None or ask == 0.0) and (bid is not None) and (mid is not None):
+                # If ASK is None but have BID and MID -> compute ASK = max(0, 2*MID - BID)
+                if (ask is None) and (bid is not None) and (mid is not None):
                     ask = max(0.0, 2.0 * mid - bid)
                     snap["PX_ASK"] = ask
+                    _log(f"[UI] ASK missing for {desc} → infer ASK=max(0,2*MID-BID)={ask}")
 
                 # --- Compute display price using clarified BUY/SELL rules ---
-                # BUY (qty > 0): price = (MID + ASK) / 2
-                #   If BID was missing originally and ASK exists, ignore the provided MID:
-                #     set BID := 0, recompute MID := (BID + ASK)/2, then price := (MID + ASK)/2
-                # SELL (qty < 0): price = (BID + MID) / 2
-                #   If MID missing but BID & ASK exist, recompute MID := (BID + ASK)/2
                 try:
                     qty_val = int(leg.qty_var.get())
                 except Exception:
                     qty_val = 1  # default BUY if unspecified
-
-                bid_was_missing = (snap.get("PX_BID") is None)
 
                 # Local copies we can mutate
                 b = bid
                 m = mid
                 a = ask
 
-                # BUY path first (qty > 0)
                 if qty_val > 0:
-                    # If BID was missing and we have ASK, ignore any provided MID and recompute from BID (0) & ASK
-                    if bid_was_missing and a is not None:
-                        b = 0.0
-                        snap["PX_BID"] = 0.0
-                        m = (b + a) / 2.0
-                        snap["PX_MID"] = m
-                    # If MID missing but BID & ASK exist, recompute MID
-                    if (m is None) and (b is not None) and (a is not None):
-                        m = (b + a) / 2.0
-                        snap["PX_MID"] = m
-                    # If ASK missing but have MID & BID, infer ASK = max(0, 2*MID - BID)
-                    if (a is None) and (m is not None) and (b is not None):
-                        a = max(0.0, 2.0 * m - b)
-                        snap["PX_ASK"] = a
-                    # Compute BUY price
+                    # BUY: price = (MID + ASK)/2, with fallbacks
                     if (m is not None) and (a is not None):
                         price = (m + a) / 2.0
                         dbg = f"(MID {m} + ASK {a})/2"
@@ -1003,16 +1010,7 @@ class OptionsPnL(tk.Toplevel):
                         price = 0.0
                         dbg = "0.0 (no prices)"
                 else:
-                    # SELL path (qty <= 0): prefer (BID + MID)/2
-                    # If MID missing but BID & ASK exist, recompute MID
-                    if (m is None) and (b is not None) and (a is not None):
-                        m = (b + a) / 2.0
-                        snap["PX_MID"] = m
-                    # If BID missing but have MID & ASK, infer BID = max(0, 2*MID - ASK)
-                    if (b is None) and (m is not None) and (a is not None):
-                        b = max(0.0, 2.0 * m - a)
-                        snap["PX_BID"] = b
-                    # Compute SELL price
+                    # SELL: price = (BID + MID)/2, with fallbacks
                     if (b is not None) and (m is not None):
                         price = (b + m) / 2.0
                         dbg = f"(BID {b} + MID {m})/2"
@@ -1029,7 +1027,7 @@ class OptionsPnL(tk.Toplevel):
                         price = 0.0
                         dbg = "0.0 (no prices)"
 
-                print(f"[SNAPSHOT] computed option price {dbg} -> {price:.4f}")
+                _log(f"[UI] computed option price {dbg} -> {price:.4f}")
 
                 # Save normalized snapshot back to the leg
                 try:
