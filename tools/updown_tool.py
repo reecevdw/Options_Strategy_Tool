@@ -68,9 +68,6 @@ class UpDownTool(tk.Toplevel):
             self.update_btn.configure(state="disabled")
         except Exception:
             pass
-        self.maturity_var.set("Loading…")
-        self.maturity_combo["values"] = []
-        self.update_idletasks()
 
         try:
             print(f"[UpDownTool] Updating data for ticker: {ticker}")
@@ -86,26 +83,32 @@ class UpDownTool(tk.Toplevel):
                 # get option chain descriptions & parse
                 chain = bbg.get_opt_chain_descriptions(ticker)
                 print(f"[UpDownTool] Retrieved {len(chain)} chain rows")
-                tree = bbg.parse_opt_chain_descriptions(chain)
-                self.chain_tree = tree  # keep for later lookups
-                mats = bbg.list_maturities(tree)
-                print(f"[UpDownTool] Maturities: {mats}")
 
-                self.maturity_combo["values"] = mats
-                if mats:
-                    self.maturity_var.set(mats[0])
-                    # Populate roots for the default maturity
-                    roots = self._roots_for_maturity(tree, mats[0])
-                    print(f"[UpDownTool] Roots for {mats[0]}: {roots}")
-                    self.root_combo["values"] = roots
-                    if roots:
-                        self.root_var.set(roots[0])
+                tree = bbg.parse_opt_chain_descriptions(chain)
+                # Only refresh maturities/roots if the current list is empty
+                existing_mats = list(self.maturity_combo.cget("values") or [])
+                if not existing_mats:
+                    self.chain_tree = tree  # keep for later lookups
+                    mats = bbg.list_maturities(tree)
+                    print(f"[UpDownTool] Maturities: {mats}")
+
+                    self.maturity_combo["values"] = mats
+                    if mats:
+                        self.maturity_var.set(mats[0])
+                        # Populate roots for the default maturity
+                        roots = self._roots_for_maturity(tree, mats[0])
+                        print(f"[UpDownTool] Roots for {mats[0]}: {roots}")
+                        self.root_combo["values"] = roots
+                        if roots:
+                            self.root_var.set(roots[0])
+                        else:
+                            self.root_var.set("")
                     else:
+                        self.maturity_var.set("(none)")
+                        self.root_combo["values"] = []
                         self.root_var.set("")
                 else:
-                    self.maturity_var.set("(none)")
-                    self.root_combo["values"] = []
-                    self.root_var.set("")
+                    print("[UpDownTool] Skipping maturity refresh (values already populated).")
         except Exception as e:
             print(f"[UpDownTool] Update failed: {e}")
             try:
@@ -144,6 +147,21 @@ class UpDownTool(tk.Toplevel):
         else:
             self.root_var.set("")
 
+    def _on_ticker_changed(self, *args):
+        """When the ticker text changes, clear dependent dropdowns so Update Data will repopulate them."""
+        try:
+            self.maturity_combo["values"] = []
+            self.maturity_var.set("")
+        except Exception:
+            pass
+        try:
+            self.root_combo["values"] = []
+            self.root_var.set("")
+        except Exception:
+            pass
+        # clear cached tree so future updates know to repopulate
+        self.chain_tree = None
+
     def build_top_section(self, parent):
         """
         Build two stacked frames:
@@ -167,6 +185,13 @@ class UpDownTool(tk.Toplevel):
 
         ttk.Label(ticker_frame, text="Ticker:", style="Title.TLabel").grid(row=0, column=0, sticky="w", padx=(0,6))
         ttk.Entry(ticker_frame, textvariable=self.ticker_var, width=14).grid(row=0, column=1, sticky="w")
+        # Add ticker trace once to clear maturity/root when ticker changes
+        if not hasattr(self, "_ticker_trace_added"):
+            try:
+                self.ticker_var.trace_add("write", lambda *a: self._on_ticker_changed())
+                self._ticker_trace_added = True
+            except Exception:
+                pass
 
         ttk.Label(ticker_frame, text="Price:", style="Title.TLabel").grid(row=0, column=2, sticky="w", padx=(16,6))
         ttk.Label(ticker_frame, textvariable=self.price_var, style="OnCard.TLabel").grid(row=0, column=3, sticky="w")
