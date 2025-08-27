@@ -477,7 +477,8 @@ class ChartWidget(ttk.Frame):
                         label_min = "Min"
 
                         label_cross = str(self.options.get("label_x_cross", "X-Cross"))
-                        parts = [f"{label_cross} = {xz_txt}"]
+                        # Build only max/min parts; do NOT include the X-Cross here to avoid duplication
+                        parts = []
                         if x_at_max is not None:
                             parts.append(f"{label_max} = {y_max:,.0f} at x={x_at_max:,.2f}")
                         else:
@@ -486,11 +487,11 @@ class ChartWidget(ttk.Frame):
                             parts.append(f"{label_min} = {y_min:,.0f} at x={x_at_min:,.2f}")
                         else:
                             parts.append(f"{label_min} = {y_min:,.0f}")
-                        max_txt = "  |  " + "  |  ".join(parts)
+                        suffix = ("  |  " + "  |  ".join(parts)) if parts else ""
                     else:
                         label_cross = str(self.options.get("label_x_cross", "X-Cross"))
-                        max_txt = ""
-                    lines.append(f"{label}:  {label_cross} = {xz_txt}{max_txt}")
+                        suffix = ""
+                    lines.append(f"{label}:  {label_cross} = {xz_txt}{suffix}")
                 except Exception:
                     continue
  
