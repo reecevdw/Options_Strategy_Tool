@@ -226,7 +226,6 @@ class UpDownTool(tk.Toplevel):
             try:
                 rights = list(detailed.get(ymd, {}).keys())
                 print(f"[UpDownTool] Detailed chain built for {ymd}. Rights: {rights}. Keys: {list(detailed.get(ymd, {}).keys())}")
-            except Exception:
                 print("[UpDownTool] Detailed chain stored.")
                 # if you want to see full ting 
                 d_ymd = detailed.get(ymd, {})
