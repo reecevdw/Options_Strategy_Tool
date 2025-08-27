@@ -9,7 +9,10 @@ import tempfile
 from typing import List, Dict, Any, Optional, Tuple
 
 from tkcalendar import DateEntry
-import blpapi
+try:
+    import blpapi
+except Exception as e:
+    print(f"Failed to import blpapi in {__file__}: {e}")
 # Support running as part of the OptionStrat package OR as a direct script import via UI.py
 try:
     # Package-relative (preferred)

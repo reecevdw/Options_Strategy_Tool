@@ -263,6 +263,154 @@ class BloombergClient:
                         out.append(row.getElementAsString("Security Description"))
         return out
  
+   
+    def get_detailed_option_chain(
+        self,
+        root: str,
+        maturity: str,
+        max_strike: Optional[float],
+        min_strike: Optional[float],
+        parsed_tree: Dict[str, Dict[str, Dict[str, Dict[str, List[str]]]]],
+    ) -> Dict[str, Dict[str, Dict[str, Dict[str, Dict[str, Optional[float]]]]]]:
+        """
+                Filter a parsed OPT_CHAIN tree by maturity date (YYYY-MM-DD or MM/DD/YY),
+        strike range (inclusive, if provided), and underlying `root` (e.g., "VXX" or "VXX2"),
+        then fetch Bloomberg snapshots for the remaining option descriptions.
+
+        Returns a nested dict with the SAME shape as `parsed_tree` down to the `underlying`
+        level, but where each *description string* is replaced by its snapshot dict:
+
+            {
+              YYYY-MM-DD: {
+                'C': {
+                  '25': {
+                    'VXX': {
+                      'VXX US 08/15/25 C25 Equity': { 'PX_BID': 0.1, 'PX_MID': 0.15, ... },
+                      ...
+                    }
+                  }
+                },
+                P': { ... }
+              }
+            }
+
+        Notes:
+        - If `maturity` is given as MM/DD/YY or MM/DD/YYYY, it is normalized.
+        - If `min_strike`/`max_strike` are None, that bound is ignored.
+        - Missing fields in snapshots are returned as None.
+        - Performs a single bulk ReferenceDataRequest for all remaining descriptions.
+        """
+
+        # --- Normalize maturity key ---
+        ymd = maturity
+        if "/" in maturity:
+            ymd = self._normalize_mdy(maturity)
+
+        rights_block = parsed_tree.get(ymd, {})
+        if not rights_block:
+            return {}
+
+        # --- Helper: strike filter ---
+        def _in_range(k: str) -> bool:
+            try:
+                f = float(k)
+            except Exception:
+                return False
+            if min_strike is not None and f < float(min_strike):
+                return False
+            if max_strike is not None and f > float(max_strike):
+                return False
+            return True
+
+        # --- Build filtered structure & collect descriptions to snapshot ---
+        filtered: Dict[str, Dict[str, Dict[str, Dict[str, List[str]]]]] = {'C': {}, 'P': {}}
+        to_snapshot: List[str] = []
+
+        for right in ('C', 'P'):
+            strikes = rights_block.get(right, {})
+            for strike_key, under_map in strikes.items():
+                if (min_strike is not None or max_strike is not None) and not _in_range(strike_key):
+                    continue
+                # Filter to the requested root only (skip others)
+                if root in under_map:
+                    descs = under_map[root]
+                    if descs:
+                        filtered[right].setdefault(strike_key, {})
+                        filtered[right][strike_key][root] = list(descs)
+                        to_snapshot.extend(descs)
+
+        if not to_snapshot:
+            # Nothing to do; return empty structure for given maturity
+            return {ymd: {'C': {}, 'P': {}}}
+
+        # --- Bulk snapshot for all descriptions we kept ---
+        fields = [
+            "OPT_FINANCE_RT",
+            "OPT_DIV_YIELD",
+            "PX_BID",
+            "PX_MID",
+            "PX_ASK",
+            "DELTA_MID_RT",
+            "GAMMA_MID_RT",
+            "VEGA_MID_RT",
+            "IVOL_MID_RT",
+            "THETA_MID_RT",
+        ]
+
+        # Send one request for all securities, collect results in a map
+        try:
+            msgs = self._refdata(to_snapshot, fields)
+        except Exception as e:
+            print(f"[get_detailed_option_chain] Snapshot error: {e}")
+            return {}
+
+        snap_map: Dict[str, Dict[str, Optional[float]]] = {}
+        try:
+            for msg in msgs:
+                if not msg.hasElement("securityData"):
+                    continue
+                arr = msg.getElement("securityData")
+                for i in range(arr.numValues()):
+                    sec_block = arr.getValueAsElement(i)
+                    try:
+                        sec_name = sec_block.getElementAsString("security")
+                    except Exception:
+                        sec_name = ""
+                    # Initialize row with None for all fields
+                    row: Dict[str, Optional[float]] = {f: None for f in fields}
+                    if sec_block.hasElement("securityError"):
+                        snap_map[sec_name] = row
+                        continue
+                    if not sec_block.hasElement("fieldData"):
+                        snap_map[sec_name] = row
+                        continue
+                    fdata = sec_block.getElement("fieldData")
+                    for f in fields:
+                        if fdata.hasElement(f):
+                            try:
+                                row[f] = fdata.getElementAsFloat(f)
+                            except Exception:
+                                try:
+                                    row[f] = float(fdata.getElementAsString(f))
+                                except Exception:
+                                    row[f] = None
+                    snap_map[sec_name] = row
+        except Exception as e:
+            # As requested: do not raise; print error and return empty structure
+            print(f"[get_detailed_option_chain] Snapshot error: {e}")
+            return {}
+
+        # --- Assemble detailed tree with snapshots per description ---
+        detailed: Dict[str, Dict[str, Dict[str, Dict[str, Dict[str, Optional[float]]]]]] = {ymd: {'C': {}, 'P': {}}}
+        for right, strikes in filtered.items():
+            for strike_key, under_map in strikes.items():
+                for under, descs in under_map.items():
+                    for desc in descs:
+                        snap = snap_map.get(desc, {f: None for f in fields})
+                        detailed[ymd].setdefault(right, {}).setdefault(strike_key, {}).setdefault(under, {})[desc] = snap
+
+        return detailed
+
     # --------------
     # Chain Search Helpers
     # --------------

@@ -14,7 +14,11 @@ from typing import List, Dict, Any, Optional, Tuple
  
  
 from tkcalendar import DateEntry
-import blpapi
+try:
+    import blpapi
+except Exception as e:
+    print(f"Failed to import blpapi in {__file__}: {e}")
+
 # Package imports
 from tools.options_pnl import OptionsPnL
 from tools.updown_tool import UpDownTool
