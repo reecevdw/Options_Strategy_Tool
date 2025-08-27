@@ -60,12 +60,33 @@ class UpDownTool(tk.Toplevel):
 
     def _update_data(self):
         ticker = (self.ticker_var.get() or "").strip()
+        norm_ticker = ticker.upper()
+        last = getattr(self, "_last_ticker", None)
+        need_chain = (last != norm_ticker) or (not getattr(self, "chain_tree", None))
         if not ticker:
             messagebox.showwarning("Missing Ticker", "Please enter a ticker symbol (e.g., AAPL)", parent=self)
             return
         # Disable button and show loading state
         try:
             self.update_btn.configure(state="disabled")
+        except Exception:
+            pass
+
+        if need_chain:
+            try:
+                self.maturity_var.set("Loading…")
+                self.maturity_combo["values"] = []
+            except Exception:
+                pass
+            try:
+                self.root_var.set("Loading…")
+                self.root_combo["values"] = []
+            except Exception:
+                pass
+        # start spinner if available
+        try:
+            if getattr(self, "update_prog", None) is not None:
+                self.update_prog.start(12)
         except Exception:
             pass
 
@@ -107,6 +128,7 @@ class UpDownTool(tk.Toplevel):
                         self.maturity_var.set("(none)")
                         self.root_combo["values"] = []
                         self.root_var.set("")
+                    self._last_ticker = norm_ticker
                 else:
                     print("[UpDownTool] Skipping maturity refresh (values already populated).")
         except Exception as e:
@@ -116,6 +138,11 @@ class UpDownTool(tk.Toplevel):
             except Exception:
                 pass
         finally:
+            try:
+                if getattr(self, "update_prog", None) is not None:
+                    self.update_prog.stop()
+            except Exception:
+                pass
             try:
                 self.update_btn.configure(state="normal")
             except Exception:
@@ -146,6 +173,96 @@ class UpDownTool(tk.Toplevel):
             self.root_var.set(roots[0])
         else:
             self.root_var.set("")
+
+    def _sf(self, s: str):
+        """Safe float parse -> float or None."""
+        try:
+            v = float(str(s).strip())
+            if v == v:  # not NaN
+                return v
+        except Exception:
+            pass
+        return None
+
+    def _update_chain(self):
+        """
+        Build a detailed maturity chain for the selected ticker/maturity/root,
+        using min/max from the UI. Saves result to self.detailed_maturity_chain.
+        """
+        # Preconditions
+        tree = getattr(self, "chain_tree", None)
+        if not isinstance(tree, dict) or not tree:
+            messagebox.showwarning("No Chain", "Please click 'Update Data' first to load the option chain.", parent=self)
+            return
+
+        ticker = (self.ticker_var.get() or "").strip()
+        ymd = (self.maturity_var.get() or "").strip()
+        root = (self.root_var.get() or "").strip()
+
+        if not ymd:
+            messagebox.showwarning("Missing Maturity", "Select a maturity first.", parent=self)
+            return
+        if not root:
+            messagebox.showwarning("Missing Root", "Select a root first.", parent=self)
+            return
+
+        # Pull min/max from the UI; we currently map Down $ -> min, Up $ -> max.
+        # (If you add dedicated strike fields later, we can switch to those.)
+        min_val = self._sf(self.down_dollar_var.get())
+        max_val = self._sf(self.up_dollar_var.get())
+
+        # If both provided and inverted, swap them
+        if (min_val is not None) and (max_val is not None) and (min_val > max_val):
+            min_val, max_val = max_val, min_val
+
+        print(f"[UpDownTool] Update Chain for {ticker}  maturity={ymd}  root={root}  min={min_val}  max={max_val}")
+
+        # Disable button while fetching
+        try:
+            self.update_chain_btn.configure(state="disabled")
+        except Exception:
+            pass
+
+        # Optionally spin the header progress bar if present
+        try:
+            if getattr(self, "update_prog", None) is not None:
+                self.update_prog.start(12)
+        except Exception:
+            pass
+
+        try:
+            with BloombergClient() as bbg:
+                detailed = bbg.get_detailed_option_chain(
+                    root=root,
+                    maturity=ymd,
+                    max_strike=max_val,
+                    min_strike=min_val,
+                    parsed_tree=tree,
+                )
+            self.detailed_maturity_chain = detailed
+            # Simple console feedback
+            try:
+                rights = list(detailed.get(ymd, {}).keys())
+                print(f"[UpDownTool] Detailed chain built for {ymd}. Rights: {rights}. Keys: {list(detailed.get(ymd, {}).keys())}")
+            except Exception:
+                print("[UpDownTool] Detailed chain stored.")
+            messagebox.showinfo("Chain Updated", f"Detailed chain built for {ymd} / {root}.", parent=self)
+        except Exception as e:
+            print(f"[UpDownTool] Update Chain failed: {e}")
+            try:
+                messagebox.showerror("Update Chain Failed", str(e), parent=self)
+            except Exception:
+                pass
+        finally:
+            try:
+                if getattr(self, "update_prog", None) is not None:
+                    self.update_prog.stop()
+            except Exception:
+                pass
+            try:
+                self.update_chain_btn.configure(state="normal")
+            except Exception:
+                pass
 
     def _on_ticker_changed(self, *args):
         """When the ticker text changes, clear dependent dropdowns so Update Data will repopulate them."""
@@ -213,10 +330,16 @@ class UpDownTool(tk.Toplevel):
             style="Accent.TButton"
         )
         self.update_btn.grid(row=0, column=8, sticky="w", padx=(16,0))
+        # Progress indicator (stopped by default)
+        try:
+            self.update_prog = ttk.Progressbar(ticker_frame, mode="indeterminate", length=90)
+            self.update_prog.grid(row=0, column=9, sticky="w", padx=(8,0))
+        except Exception:
+            self.update_prog = None
 
-        for c in range(0, 9):
+        for c in range(0, 10):
             ticker_frame.grid_columnconfigure(c, weight=0)
-        ticker_frame.grid_columnconfigure(9, weight=1)
+        ticker_frame.grid_columnconfigure(10, weight=1)
 
         # -----------------------
         # Frame 2: Scenario Entry
@@ -242,6 +365,10 @@ class UpDownTool(tk.Toplevel):
         ttk.Label(scenario_frame, text="Down Prob %", style="Title.TLabel").grid(row=0, column=6, sticky="w")
         ttk.Entry(scenario_frame, textvariable=self.down_prob_var, width=10).grid(row=0, column=7, sticky="w", padx=(6,0))
 
-        for c in range(0, 8):
+        # Update Chain button
+        self.update_chain_btn = ttk.Button(scenario_frame, text="Update Chain", command=self._update_chain)
+        self.update_chain_btn.grid(row=0, column=8, sticky="w", padx=(16,0))
+
+        for c in range(0, 9):
             scenario_frame.grid_columnconfigure(c, weight=0)
-        scenario_frame.grid_columnconfigure(8, weight=1)
+        scenario_frame.grid_columnconfigure(9, weight=1)
