@@ -49,7 +49,7 @@ DEFAULT_OPTIONS = {
     "main_color": "#51284F",
     "accent_color": "#0078D4",
     # stats panel options
-    "show_line_stats": False,   # show per-line stats panel
+    "show_line_stats": True,   # show per-line stats panel
     "show_max_in_summary": True,     # draw a marker at each line's max
     # customizable UI labels (for Customize dialog)
     "label_ref_line": "Reference line",
@@ -462,21 +462,34 @@ class ChartWidget(ttk.Frame):
             for label, line, yvals in _plotted:
                 try:
                     xz = self._zero_crossings(self._x, yvals)
-                    xz_txt = ", ".join(f"{v:.2f}" for v in xz) if xz else "—"
- 
-                    max_txt = ""
+                    xz_txt = ", ".join(f"{v:,.2f}" for v in xz) if xz else "—"
+
                     if self.options.get("show_max_in_summary", True):
+                        # Max
                         y_max = max(yvals)
-                        idx = yvals.index(y_max)
-                        x_at_max = self._x[idx] if idx < len(self._x) else None
+                        idx_max = yvals.index(y_max)
+                        x_at_max = self._x[idx_max] if idx_max < len(self._x) else None
                         label_max = str(self.options.get("max_statistic_label", "Max"))
+                        # Min
+                        y_min = min(yvals)
+                        idx_min = yvals.index(y_min)
+                        x_at_min = self._x[idx_min] if idx_min < len(self._x) else None
+                        label_min = "Min"
+
                         label_cross = str(self.options.get("label_x_cross", "X-Cross"))
+                        parts = [f"{label_cross} = {xz_txt}"]
                         if x_at_max is not None:
-                            max_txt = f"  |  {label_max} = {y_max:.2f} at x={x_at_max:.2f}"
+                            parts.append(f"{label_max} = {y_max:,.0f} at x={x_at_max:,.2f}")
                         else:
-                            max_txt = f"  |  {label_max} = {y_max:.2f}"
+                            parts.append(f"{label_max} = {y_max:,.0f}")
+                        if x_at_min is not None:
+                            parts.append(f"{label_min} = {y_min:,.0f} at x={x_at_min:,.2f}")
+                        else:
+                            parts.append(f"{label_min} = {y_min:,.0f}")
+                        max_txt = "  |  " + "  |  ".join(parts)
                     else:
                         label_cross = str(self.options.get("label_x_cross", "X-Cross"))
+                        max_txt = ""
                     lines.append(f"{label}:  {label_cross} = {xz_txt}{max_txt}")
                 except Exception:
                     continue
