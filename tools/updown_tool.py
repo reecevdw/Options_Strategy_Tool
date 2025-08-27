@@ -83,13 +83,7 @@ class UpDownTool(tk.Toplevel):
                 self.root_combo["values"] = []
             except Exception:
                 pass
-        # start spinner if available
-        try:
-            if getattr(self, "update_prog", None) is not None:
-                self.update_prog.start(12)
-        except Exception:
-            pass
-
+    
         try:
             print(f"[UpDownTool] Updating data for ticker: {ticker}")
             with BloombergClient() as bbg:
@@ -138,11 +132,6 @@ class UpDownTool(tk.Toplevel):
             except Exception:
                 pass
         finally:
-            try:
-                if getattr(self, "update_prog", None) is not None:
-                    self.update_prog.stop()
-            except Exception:
-                pass
             try:
                 self.update_btn.configure(state="normal")
             except Exception:
@@ -223,13 +212,6 @@ class UpDownTool(tk.Toplevel):
         except Exception:
             pass
 
-        # Optionally spin the header progress bar if present
-        try:
-            if getattr(self, "update_prog", None) is not None:
-                self.update_prog.start(12)
-        except Exception:
-            pass
-
         try:
             with BloombergClient() as bbg:
                 detailed = bbg.get_detailed_option_chain(
@@ -246,6 +228,21 @@ class UpDownTool(tk.Toplevel):
                 print(f"[UpDownTool] Detailed chain built for {ymd}. Rights: {rights}. Keys: {list(detailed.get(ymd, {}).keys())}")
             except Exception:
                 print("[UpDownTool] Detailed chain stored.")
+                # if you want to see full ting 
+                d_ymd = detailed.get(ymd, {})
+                print(f"[UpDownTool] Detailed chain summary for {ymd} / {root}:")
+                for right, strikes in d_ymd.items():
+                    strike_count = len(strikes)
+                    under_set = set()
+                    leaf_count = 0
+                    for strike_key, under_map in strikes.items():
+                        for under, desc_map in under_map.items():
+                            under_set.add(under)
+                            leaf_count += len(desc_map)
+                    print(f"  Right={right}: strikes={strike_count}, roots={len(under_set)}, contracts={leaf_count}")
+            except Exception as _e:
+                print(f"[UpDownTool] Detailed chain stored (summary unavailable): {_e}")
+
             messagebox.showinfo("Chain Updated", f"Detailed chain built for {ymd} / {root}.", parent=self)
         except Exception as e:
             print(f"[UpDownTool] Update Chain failed: {e}")
@@ -254,11 +251,6 @@ class UpDownTool(tk.Toplevel):
             except Exception:
                 pass
         finally:
-            try:
-                if getattr(self, "update_prog", None) is not None:
-                    self.update_prog.stop()
-            except Exception:
-                pass
             try:
                 self.update_chain_btn.configure(state="normal")
             except Exception:
@@ -330,16 +322,11 @@ class UpDownTool(tk.Toplevel):
             style="Accent.TButton"
         )
         self.update_btn.grid(row=0, column=8, sticky="w", padx=(16,0))
-        # Progress indicator (stopped by default)
-        try:
-            self.update_prog = ttk.Progressbar(ticker_frame, mode="indeterminate", length=90)
-            self.update_prog.grid(row=0, column=9, sticky="w", padx=(8,0))
-        except Exception:
-            self.update_prog = None
+        
 
-        for c in range(0, 10):
+        for c in range(0, 9):
             ticker_frame.grid_columnconfigure(c, weight=0)
-        ticker_frame.grid_columnconfigure(10, weight=1)
+        ticker_frame.grid_columnconfigure(9, weight=1)
 
         # -----------------------
         # Frame 2: Scenario Entry
