@@ -87,14 +87,25 @@ class UpDownTool(tk.Toplevel):
                 chain = bbg.get_opt_chain_descriptions(ticker)
                 print(f"[UpDownTool] Retrieved {len(chain)} chain rows")
                 tree = bbg.parse_opt_chain_descriptions(chain)
+                self.chain_tree = tree  # keep for later lookups
                 mats = bbg.list_maturities(tree)
                 print(f"[UpDownTool] Maturities: {mats}")
 
                 self.maturity_combo["values"] = mats
                 if mats:
                     self.maturity_var.set(mats[0])
+                    # Populate roots for the default maturity
+                    roots = self._roots_for_maturity(tree, mats[0])
+                    print(f"[UpDownTool] Roots for {mats[0]}: {roots}")
+                    self.root_combo["values"] = roots
+                    if roots:
+                        self.root_var.set(roots[0])
+                    else:
+                        self.root_var.set("")
                 else:
                     self.maturity_var.set("(none)")
+                    self.root_combo["values"] = []
+                    self.root_var.set("")
         except Exception as e:
             print(f"[UpDownTool] Update failed: {e}")
             try:
@@ -106,6 +117,32 @@ class UpDownTool(tk.Toplevel):
                 self.update_btn.configure(state="normal")
             except Exception:
                 pass
+
+    def _roots_for_maturity(self, tree: dict, ymd: str) -> list[str]:
+        """Collect unique underlyings (roots) for a given maturity across all rights/strikes."""
+        roots = set()
+        try:
+            rights = tree.get(ymd, {})
+            for right in ("C", "P"):
+                strikes = rights.get(right, {})
+                for strike_key, under_map in strikes.items():
+                    for under in under_map.keys():
+                        roots.add(under)
+        except Exception:
+            pass
+        return sorted(roots)
+
+    def _on_maturity_selected(self, event=None):
+        tree = getattr(self, 'chain_tree', None)
+        if not isinstance(tree, dict):
+            return
+        ymd = (self.maturity_var.get() or "").strip()
+        roots = self._roots_for_maturity(tree, ymd)
+        self.root_combo["values"] = roots
+        if roots:
+            self.root_var.set(roots[0])
+        else:
+            self.root_var.set("")
 
     def build_top_section(self, parent):
         """
@@ -137,6 +174,12 @@ class UpDownTool(tk.Toplevel):
         ttk.Label(ticker_frame, text="Maturity:", style="Title.TLabel").grid(row=0, column=4, sticky="w", padx=(16,6))
         self.maturity_combo = ttk.Combobox(ticker_frame, textvariable=self.maturity_var, width=16, state="readonly", values=[])
         self.maturity_combo.grid(row=0, column=5, sticky="w")
+        self.maturity_combo.bind("<<ComboboxSelected>>", self._on_maturity_selected)
+
+        ttk.Label(ticker_frame, text="Root:", style="Title.TLabel").grid(row=0, column=6, sticky="w", padx=(16,6))
+        self.root_var = getattr(self, 'root_var', tk.StringVar(value=""))
+        self.root_combo = ttk.Combobox(ticker_frame, textvariable=self.root_var, width=12, state="readonly", values=[])
+        self.root_combo.grid(row=0, column=7, sticky="w")
 
         self.update_btn = ttk.Button(
             ticker_frame,
@@ -144,11 +187,11 @@ class UpDownTool(tk.Toplevel):
             command=self._update_data,
             style="Accent.TButton"
         )
-        self.update_btn.grid(row=0, column=6, sticky="w", padx=(16,0))
+        self.update_btn.grid(row=0, column=8, sticky="w", padx=(16,0))
 
-        for c in range(0, 6):
+        for c in range(0, 9):
             ticker_frame.grid_columnconfigure(c, weight=0)
-        ticker_frame.grid_columnconfigure(6, weight=1)
+        ticker_frame.grid_columnconfigure(9, weight=1)
 
         # -----------------------
         # Frame 2: Scenario Entry
