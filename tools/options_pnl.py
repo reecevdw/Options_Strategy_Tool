@@ -3140,6 +3140,29 @@ class OptionsPnL(tk.Toplevel):
                 computed_total += q * p * 100.0
         except Exception:
             pass
+        # --- Add cash equity position P&L to the totals ---
+        # Equity is a cash position with delta = 1 per share (100 delta convention for options is handled
+        # inside option legs which use a MULTIPLIER of 100). For cash equity, profit per move is:
+        #   profit = qty * (price_after_movement - spot)
+        # where price_after_movement = spot * (1 + move * beta). We use beta=1.0 for direct underlying moves.
+        try:
+            eq_qty = float((strategy.get("qty", "0") or 0))
+        except Exception:
+            eq_qty = 0.0
+        try:
+            # Only add equity P&L if a non-zero quantity is provided
+            if eq_qty != 0.0:
+                for dt, arr in list(totals.items()):
+                    # arr is a list of totals for each grid point; we add equity profit pointwise
+                    new_arr = []
+                    for i, mv in enumerate(moves):
+                        # price movement grid 'mv' is a decimal (e.g., 0.10 for +10%)
+                        price_after = spot * (1.0 + mv * 1.0)
+                        eq_profit = (price_after - spot) * eq_qty
+                        new_arr.append(arr[i] + eq_profit)
+                    totals[dt] = new_arr
+        except Exception:
+            pass
         # If an override is given, shift all P&L series by (computed_total - override)
         try:
             ov_txt = (self.total_prem_override_var.get() if hasattr(self, 'total_prem_override_var') else '').strip()
