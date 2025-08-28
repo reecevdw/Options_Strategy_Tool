@@ -55,7 +55,7 @@ class Launcher(tk.Tk):
         btns = ttk.Frame(wrap)
         btns.pack(pady=16)
         ttk.Button(btns, text="Options P&L Simulator", style="Accent.TButton", command=self._open_pnl).grid(row=0, column=0, padx=8)
-        ttk.Button(btns, text="UpDown (placeholder)", command=self._open_updown).grid(row=0, column=1, padx=8)
+        ttk.Button(btns, text="UpDown (in development)", command=self._open_updown).grid(row=0, column=1, padx=8)
         ttk.Button(wrap, text="Quit", style="Danger.TButton", command=self.destroy).pack(pady=(12, 0))
 
     def _open_pnl(self):

@@ -39,6 +39,15 @@ class UpDownTool(tk.Toplevel):
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
+        # --- Menu bar ---
+        menubar = tk.Menu(self)
+        file_menu = tk.Menu(menubar, tearoff=0)
+        file_menu.add_command(label="Go to Home", command=self._go_home)
+        file_menu.add_separator()
+        file_menu.add_command(label="Close", command=self._on_close)
+        menubar.add_cascade(label="File", menu=file_menu)
+        self.config(menu=menubar)
+
         # --- Root content frame ---
         frm = ttk.Frame(self, padding=12, style="Card.TFrame")
         frm.pack(fill="both", expand=True)
@@ -100,10 +109,12 @@ class UpDownTool(tk.Toplevel):
                 print(f"[UpDownTool] Retrieved {len(chain)} chain rows")
 
                 tree = bbg.parse_opt_chain_descriptions(chain)
+                # Always cache the latest parsed tree for downstream lookups
+                self.chain_tree = tree  # keep for later lookups
+
                 # Only refresh maturities/roots if the current list is empty
                 existing_mats = list(self.maturity_combo.cget("values") or [])
                 if not existing_mats:
-                    self.chain_tree = tree  # keep for later lookups
                     mats = bbg.list_maturities(tree)
                     print(f"[UpDownTool] Maturities: {mats}")
 
@@ -213,6 +224,8 @@ class UpDownTool(tk.Toplevel):
             pass
 
         try:
+            # Rebuild detailed chain on every request so snapshots are fresh
+            self.detailed_maturity_chain = {}
             with BloombergClient() as bbg:
                 detailed = bbg.get_detailed_option_chain(
                     root=root,
