@@ -77,7 +77,6 @@ class ChartWidget(ttk.Frame):
     """
     def __init__(self, parent, *, options=None):
         super().__init__(parent)
-        self.minsize(900, 600)
         self.options = dict(DEFAULT_OPTIONS)
         if options:
             self.options.update(options)

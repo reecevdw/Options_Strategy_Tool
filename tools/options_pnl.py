@@ -1361,6 +1361,43 @@ class OptionsPnL(tk.Toplevel):
                         pass
         except Exception:
             pass
+
+    def _widen_chart_popout(self, width: int = 1200, min_width: int = 800, min_height: int = 600):
+        """Widen the chart pop-out window only. Prefers ChartWidget.ensure_wide_parent
+        if available; falls back to resizing the popout Toplevel directly."""
+        try:
+            win = getattr(self, "_chart_win", None)
+            if not win or not tk.Toplevel.winfo_exists(win):
+                return
+            # Prefer the chart widget helper if present
+            chart = getattr(self, "_chart_widget", None)
+            if chart is not None and hasattr(chart, "ensure_wide_parent") and callable(chart.ensure_wide_parent):
+                try:
+                    chart.ensure_wide_parent(width=width, min_width=min_width, min_height=min_height)
+                    return
+                except Exception:
+                    pass
+            # Fallback: set geometry/minsize on the popout toplevel directly
+            try:
+                win.update_idletasks()
+            except Exception:
+                pass
+            try:
+                cur_h = int(win.winfo_height() or 0)
+            except Exception:
+                cur_h = 0
+            h = max(cur_h, min_height)
+            try:
+                win.geometry(f"{int(width)}x{h}")
+            except Exception:
+                pass
+            try:
+                win.minsize(int(min_width), int(min_height))
+            except Exception:
+                pass
+        except Exception:
+            pass
+
     def _on_close(self):
         """Gracefully close Bloomberg client and exit this tool window."""
         try:
@@ -2102,7 +2139,7 @@ class OptionsPnL(tk.Toplevel):
             win = tk.Toplevel(self, name="chart_win")
             self._chart_win = win
             win.title("P&L Chart")
-            win.minsize(800, 500)
+            win.minsize(900, 500)
  
             def _on_close_popout():
                 self._chart_ready = False
@@ -2123,7 +2160,7 @@ class OptionsPnL(tk.Toplevel):
                 self.update_idletasks()
                 rx, ry = self.winfo_rootx(), self.winfo_rooty()
                 rw = self.winfo_width()
-                win.geometry(f"+{rx + rw + 10}+{ry + 40}")
+                win.geometry(f"+{rx + rw + 30}+{ry + 40}")
             except Exception:
                 pass
  
@@ -2166,6 +2203,12 @@ class OptionsPnL(tk.Toplevel):
             self.chart_widget = ChartWidget(container, options=opts)
             self.chart_widget.pack(fill="both", expand=True)
             self.chart_widget._draw_placeholder("Fill in leg(s) and scenario date(s)")
+
+            # After creating or showing the chart window, widen it (chart popout only)
+            try:
+                self.after_idle(self._widen_chart_popout)
+            except Exception:
+                pass
  
             self._chart_ready = True
             return win
