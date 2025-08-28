@@ -371,3 +371,43 @@ class UpDownTool(tk.Toplevel):
         for c in range(0, 9):
             scenario_frame.grid_columnconfigure(c, weight=0)
         scenario_frame.grid_columnconfigure(9, weight=1)
+
+
+
+
+    def stock_outright():
+        px price from before
+
+        up = (self.up_dollar_var - self.px) * self.up_prob_var
+        down = (self.px - self.down_dollar_var) * self.down_prob_var
+
+        return up/down
+    
+    def stock_put(put_strike, put_desc):
+
+        get the put's snapshot and then pull the price from the snapshot
+
+        up = (self.up_dollar_var - px - put_price) * self.up_prob_var
+        down = ((self.px - self.down_dollar_var) + put_price) * self.down_prob_var
+        
+        return up/down
+
+    then i need these same for a stock and put spread (so need top strike and bottom strike)
+        
+    then one function for bullish risky (buy call and sell put, so entry for call strike and put strike)
+
+    then one function for just outright call so just strike and then pull the premium 
+
+    then one function for just outright put
+        
+    then one function for just call spread so need bottom and top
+        
+    then one function for call spread one by 2
+        
+    then one function for buy write
+
+    then one function for straddle
+
+    then one function for collar
+
+    then one function for calls spread collar (put strke, call bottom strike, call top strike)
