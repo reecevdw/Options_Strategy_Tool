@@ -382,6 +382,32 @@ class UpDownTool(tk.Toplevel):
         return {"up": up, "down": down, "ratio": (up / denom)}
 
     # =========================
+    # Implied probability helper (price-to-cap heuristic)
+    # =========================
+    def _implied_prob_from_caps(self, entry_net: float, up_pnl: float, down_pnl: float):
+        """
+        Debit trades (entry_net > 0): implied = debit / UpCap, where UpCap = max(up_pnl, 0).
+        Credit trades (entry_net < 0): implied = credit / DownCap, where DownCap = max(-down_pnl, 0).
+        Returns float in [0,1] or None if not computable.
+        """
+        eps = 1e-12
+        try:
+            if entry_net > eps:
+                up_cap = max(up_pnl, 0.0)
+                if up_cap <= eps:
+                    return None
+                return max(0.0, min(1.0, entry_net / up_cap))
+            elif entry_net < -eps:
+                down_cap = max(-down_pnl, 0.0)
+                if down_cap <= eps:
+                    return None
+                return max(0.0, min(1.0, abs(entry_net) / down_cap))
+            else:
+                return None
+        except Exception:
+            return None
+
+    # =========================
     # 1) Stock outright
     # =========================
     def strat_stock_outright(self) -> dict:
@@ -390,10 +416,14 @@ class UpDownTool(tk.Toplevel):
         Returns dict {up, down, ratio} where ratio = up / |down|.
         """
         S = self._get_spot()
-        up_p, dn_p, up_prob, dn_prob = self._targets()
-        up = (up_p - S) * up_prob
-        down = (S - dn_p) * dn_prob
-        return self._result(up, -down)
+        up_p, dn_p, _, _ = self._targets()
+        up_payoff = (up_p - S)
+        dn_payoff = (dn_p - S)
+        entry = 0.0
+        implied = self._implied_prob_from_caps(entry, up_payoff, dn_payoff)
+        res = self._result(up_payoff, -dn_payoff)
+        res["implied"] = None  # no option entry; N/A
+        return res
 
     # =========================
     # 2) Stock + Put (protective put)
@@ -404,11 +434,15 @@ class UpDownTool(tk.Toplevel):
         Returns {up, down, ratio}.
         """
         S = self._get_spot()
-        up_p, dn_p, up_prob, dn_prob = self._targets()
+        up_p, dn_p, _, _ = self._targets()
         put_px = self._option_price("P", put_strike) or 0.0
-        up = (up_p - S - put_px) * up_prob
-        down = ((S - dn_p) + put_px) * dn_prob
-        return self._result(up, -down)
+        entry = put_px
+        up_payoff = (up_p - S) + max(put_strike - up_p, 0.0) - put_px
+        dn_payoff = (dn_p - S) + max(put_strike - dn_p, 0.0) - put_px
+        implied = self._implied_prob_from_caps(entry, up_payoff, dn_payoff)
+        res = self._result(up_payoff, -dn_payoff)
+        res["implied"] = implied
+        return res
 
     # =========================
     # 3) Stock + Put Spread
@@ -419,13 +453,17 @@ class UpDownTool(tk.Toplevel):
         Returns {up, down, ratio}.
         """
         S = self._get_spot()
-        up_p, dn_p, up_prob, dn_prob = self._targets()
+        up_p, dn_p, _, _ = self._targets()
         p_high = self._option_price("P", high_strike) or 0.0  # buy higher K
         p_low  = self._option_price("P", low_strike)  or 0.0  # sell lower K
         net_debit = p_high - p_low
-        up = (up_p - S - net_debit) * up_prob
-        down = ((S - dn_p) + net_debit) * dn_prob
-        return self._result(up, -down)
+        entry = net_debit
+        up_payoff = (up_p - S) + (max(high_strike - up_p, 0.0) - max(low_strike - up_p, 0.0)) - net_debit
+        dn_payoff = (dn_p - S) + (max(high_strike - dn_p, 0.0) - max(low_strike - dn_p, 0.0)) - net_debit
+        implied = self._implied_prob_from_caps(entry, up_payoff, dn_payoff)
+        res = self._result(up_payoff, -dn_payoff)
+        res["implied"] = implied
+        return res
 
     # =========================
     # 4) Bullish Risk Reversal (long C, short P)
@@ -436,13 +474,17 @@ class UpDownTool(tk.Toplevel):
         Returns {up, down, ratio}.
         """
         S = self._get_spot()
-        up_p, dn_p, up_prob, dn_prob = self._targets()
+        up_p, dn_p, _, _ = self._targets()
         c_px = self._option_price("C", call_strike) or 0.0
         p_px = self._option_price("P", put_strike) or 0.0
         net_debit = c_px - p_px  # could be negative (credit)
-        up = (up_p - S - net_debit) * up_prob
-        down = ((S - dn_p) + net_debit) * dn_prob
-        return self._result(up, -down)
+        entry = net_debit
+        up_payoff = max(up_p - call_strike, 0.0) - max(put_strike - up_p, 0.0) - net_debit
+        dn_payoff = max(dn_p - call_strike, 0.0) - max(put_strike - dn_p, 0.0) - net_debit
+        implied = self._implied_prob_from_caps(entry, up_payoff, dn_payoff)
+        res = self._result(up_payoff, -dn_payoff)
+        res["implied"] = implied
+        return res
 
     # =========================
     # 5) Call outright
@@ -451,13 +493,14 @@ class UpDownTool(tk.Toplevel):
         """Long call @K: payoff = max(S - K, 0) - call premium at scenario prices.
         Uses snapshot-derived premium. Returns {up, down, ratio} for UP/DOWN targets.
         """
-        up_p, dn_p, up_prob, dn_prob = self._targets()
-        c_px = self._option_price("C", strike) or 0.0
-        up_payoff = self._intrinsic_call(up_p, strike) - c_px
-        dn_payoff = 0.0 - c_px
-        up = up_payoff * up_prob
-        down = dn_payoff * dn_prob
-        return self._result(up, down)
+        entry = self._option_price("C", strike) or 0.0
+        up_p, dn_p, _, _ = self._targets()
+        up_payoff = max(up_p - strike, 0.0) - entry
+        dn_payoff = 0.0 - entry
+        implied = self._implied_prob_from_caps(entry, up_payoff, dn_payoff)
+        res = self._result(up_payoff, dn_payoff)
+        res["implied"] = implied
+        return res
 
     # =========================
     # 6) Put outright
@@ -466,13 +509,14 @@ class UpDownTool(tk.Toplevel):
         """Long put @K: payoff = max(K - S, 0) - put premium at scenario prices.
         Uses snapshot-derived premium. Returns {up, down, ratio} for UP/DOWN targets.
         """
-        up_p, dn_p, up_prob, dn_prob = self._targets()
-        p_px = self._option_price("P", strike) or 0.0
-        up_payoff = 0.0 - p_px
-        dn_payoff = self._intrinsic_put(dn_p, strike) - p_px
-        up = up_payoff * up_prob
-        down = dn_payoff * dn_prob
-        return self._result(up, down)
+        entry = self._option_price("P", strike) or 0.0
+        up_p, dn_p, _, _ = self._targets()
+        up_payoff = 0.0 - entry
+        dn_payoff = max(strike - dn_p, 0.0) - entry
+        implied = self._implied_prob_from_caps(entry, up_payoff, dn_payoff)
+        res = self._result(up_payoff, dn_payoff)
+        res["implied"] = implied
+        return res
 
     # =========================
     # 7) Call spread (long K1, short K2>K1)
@@ -481,15 +525,18 @@ class UpDownTool(tk.Toplevel):
         """Call vertical: long call @K1, short call @K2>K1.
         Net debit = C(K1) - C(K2). UP payoff capped at (K2-K1) minus net debit; DOWN = -net debit. Returns {up, down, ratio}.
         """
-        up_p, dn_p, up_prob, dn_prob = self._targets()
         c1 = self._option_price("C", low_strike)  or 0.0  # buy
         c2 = self._option_price("C", high_strike) or 0.0  # sell
         net_debit = c1 - c2
-        up_payoff = min(max(up_p - low_strike, 0.0), max(high_strike - low_strike, 0.0)) - net_debit
-        dn_payoff = 0.0 - net_debit
-        up = up_payoff * up_prob
-        down = dn_payoff * dn_prob
-        return self._result(up, down)
+        entry = net_debit
+        up_p, dn_p, _, _ = self._targets()
+        width = max(0.0, high_strike - low_strike)
+        up_payoff = min(max(up_p - low_strike, 0.0), width) - entry
+        dn_payoff = 0.0 - entry
+        implied = self._implied_prob_from_caps(entry, up_payoff, dn_payoff)
+        res = self._result(up_payoff, dn_payoff)
+        res["implied"] = implied
+        return res
 
     # =========================
     # 8) Call spread 1x2 (long 1 low, short 2 high)
@@ -498,15 +545,17 @@ class UpDownTool(tk.Toplevel):
         """Call 1x2: long 1 call @K1, short 2 calls @K2>K1.
         Net debit = C(K1) - 2*C(K2). UP payoff reflects convex short above K2; DOWN = -net debit. Returns {up, down, ratio}.
         """
-        up_p, dn_p, up_prob, dn_prob = self._targets()
         c1 = self._option_price("C", low_strike)  or 0.0
         c2 = self._option_price("C", high_strike) or 0.0
         net_debit = c1 - 2.0*c2
-        up_payoff = max(up_p - low_strike, 0.0) - 2.0*max(up_p - high_strike, 0.0) - net_debit
-        dn_payoff = 0.0 - net_debit
-        up = up_payoff * up_prob
-        down = dn_payoff * dn_prob
-        return self._result(up, down)
+        entry = net_debit
+        up_p, dn_p, _, _ = self._targets()
+        up_payoff = max(up_p - low_strike, 0.0) - 2.0*max(up_p - high_strike, 0.0) - entry
+        dn_payoff = 0.0 - entry
+        implied = self._implied_prob_from_caps(entry, up_payoff, dn_payoff)
+        res = self._result(up_payoff, dn_payoff)
+        res["implied"] = implied
+        return res
 
     # =========================
     # Call Backspreads (ratio: long more higher-K calls, short fewer lower-K calls)
@@ -516,30 +565,34 @@ class UpDownTool(tk.Toplevel):
         Payoff(S) = 2*max(S-K_high,0) - max(S-K_low,0) - net_debit,
         where net_debit = 2*C(K_high) - C(K_low). Returns {up, down, ratio} using scenario targets.
         """
-        up_p, dn_p, up_prob, dn_prob = self._targets()
         c_low  = self._option_price("C", short_low)  or 0.0
         c_high = self._option_price("C", long_high) or 0.0
         net_debit = 2.0*c_high - c_low
-        up_payoff = 2.0*max(up_p - long_high, 0.0) - max(up_p - short_low, 0.0) - net_debit
-        dn_payoff = 2.0*max(dn_p - long_high, 0.0) - max(dn_p - short_low, 0.0) - net_debit
-        up = up_payoff * up_prob
-        down = dn_payoff * dn_prob
-        return self._result(up, down)
+        entry = net_debit
+        up_p, dn_p, _, _ = self._targets()
+        up_payoff = 2.0*max(up_p - long_high, 0.0) - max(up_p - short_low, 0.0) - entry
+        dn_payoff = 2.0*max(dn_p - long_high, 0.0) - max(dn_p - short_low, 0.0) - entry
+        implied = self._implied_prob_from_caps(entry, up_payoff, dn_payoff)
+        res = self._result(up_payoff, dn_payoff)
+        res["implied"] = implied
+        return res
 
     def strat_call_backspread_3x1(self, short_low: float, long_high: float) -> dict:
         """Call backspread 3x1: short 1 call @K_low, long 3 calls @K_high (K_high > K_low).
         Payoff(S) = 3*max(S-K_high,0) - max(S-K_low,0) - net_debit,
         where net_debit = 3*C(K_high) - C(K_low). Returns {up, down, ratio} using scenario targets.
         """
-        up_p, dn_p, up_prob, dn_prob = self._targets()
         c_low  = self._option_price("C", short_low)  or 0.0
         c_high = self._option_price("C", long_high) or 0.0
         net_debit = 3.0*c_high - c_low
-        up_payoff = 3.0*max(up_p - long_high, 0.0) - max(up_p - short_low, 0.0) - net_debit
-        dn_payoff = 3.0*max(dn_p - long_high, 0.0) - max(dn_p - short_low, 0.0) - net_debit
-        up = up_payoff * up_prob
-        down = dn_payoff * dn_prob
-        return self._result(up, down)
+        entry = net_debit
+        up_p, dn_p, _, _ = self._targets()
+        up_payoff = 3.0*max(up_p - long_high, 0.0) - max(up_p - short_low, 0.0) - entry
+        dn_payoff = 3.0*max(dn_p - long_high, 0.0) - max(dn_p - short_low, 0.0) - entry
+        implied = self._implied_prob_from_caps(entry, up_payoff, dn_payoff)
+        res = self._result(up_payoff, dn_payoff)
+        res["implied"] = implied
+        return res
 
     # =========================
     # Put Backspreads (ratio: long more lower-K puts, short fewer higher-K puts)
@@ -549,15 +602,17 @@ class UpDownTool(tk.Toplevel):
         Payoff(S) = 2*max(K_low-S,0) - max(K_high-S,0) - net_debit,
         where net_debit = 2*P(K_low) - P(K_high). Returns {up, down, ratio} using scenario targets.
         """
-        up_p, dn_p, up_prob, dn_prob = self._targets()
         p_high = self._option_price("P", short_high) or 0.0
         p_low  = self._option_price("P", long_low)  or 0.0
         net_debit = 2.0*p_low - p_high
-        up_payoff = 2.0*max(long_low - up_p, 0.0) - max(short_high - up_p, 0.0) - net_debit
-        dn_payoff = 2.0*max(long_low - dn_p, 0.0) - max(short_high - dn_p, 0.0) - net_debit
-        up = up_payoff * up_prob
-        down = dn_payoff * dn_prob
-        return self._result(up, down)
+        entry = net_debit
+        up_p, dn_p, _, _ = self._targets()
+        up_payoff = 2.0*max(long_low - up_p, 0.0) - max(short_high - up_p, 0.0) - entry
+        dn_payoff = 2.0*max(long_low - dn_p, 0.0) - max(short_high - dn_p, 0.0) - entry
+        implied = self._implied_prob_from_caps(entry, up_payoff, dn_payoff)
+        res = self._result(up_payoff, dn_payoff)
+        res["implied"] = implied
+        return res
 
 
     def strat_put_backspread_3x1(self, short_high: float, long_low: float) -> dict:
@@ -565,15 +620,17 @@ class UpDownTool(tk.Toplevel):
         Payoff(S) = 3*max(K_low-S,0) - max(K_high-S,0) - net_debit,
         where net_debit = 3*P(K_low) - P(K_high). Returns {up, down, ratio} using scenario targets.
         """
-        up_p, dn_p, up_prob, dn_prob = self._targets()
         p_high = self._option_price("P", short_high) or 0.0
         p_low  = self._option_price("P", long_low)  or 0.0
         net_debit = 3.0*p_low - p_high
-        up_payoff = 3.0*max(long_low - up_p, 0.0) - max(short_high - up_p, 0.0) - net_debit
-        dn_payoff = 3.0*max(long_low - dn_p, 0.0) - max(short_high - dn_p, 0.0) - net_debit
-        up = up_payoff * up_prob
-        down = dn_payoff * dn_prob
-        return self._result(up, down)
+        entry = net_debit
+        up_p, dn_p, _, _ = self._targets()
+        up_payoff = 3.0*max(long_low - up_p, 0.0) - max(short_high - up_p, 0.0) - entry
+        dn_payoff = 3.0*max(long_low - dn_p, 0.0) - max(short_high - dn_p, 0.0) - entry
+        implied = self._implied_prob_from_caps(entry, up_payoff, dn_payoff)
+        res = self._result(up_payoff, dn_payoff)
+        res["implied"] = implied
+        return res
 
     # =========================
     # Call / Put Butterflies (1:-2:1)
@@ -584,16 +641,18 @@ class UpDownTool(tk.Toplevel):
         Payoff(S) = max(S-K_low,0) - 2*max(S-K_mid,0) + max(S-K_high,0) - net_debit.
         Returns {up, down, ratio} with scenario targets.
         """
-        up_p, dn_p, up_prob, dn_prob = self._targets()
         cL = self._option_price("C", k_low)  or 0.0
         cM = self._option_price("C", k_mid)  or 0.0
         cH = self._option_price("C", k_high) or 0.0
         net_debit = cL - 2.0*cM + cH
-        up_payoff = max(up_p - k_low, 0.0) - 2.0*max(up_p - k_mid, 0.0) + max(up_p - k_high, 0.0) - net_debit
-        dn_payoff = max(dn_p - k_low, 0.0) - 2.0*max(dn_p - k_mid, 0.0) + max(dn_p - k_high, 0.0) - net_debit
-        up = up_payoff * up_prob
-        down = dn_payoff * dn_prob
-        return self._result(up, down)
+        entry = net_debit
+        up_p, dn_p, _, _ = self._targets()
+        up_payoff = max(up_p - k_low, 0.0) - 2.0*max(up_p - k_mid, 0.0) + max(up_p - k_high, 0.0) - entry
+        dn_payoff = max(dn_p - k_low, 0.0) - 2.0*max(dn_p - k_mid, 0.0) + max(dn_p - k_high, 0.0) - entry
+        implied = self._implied_prob_from_caps(entry, up_payoff, dn_payoff)
+        res = self._result(up_payoff, dn_payoff)
+        res["implied"] = implied
+        return res
 
     def strat_put_butterfly(self, k_low: float, k_mid: float, k_high: float) -> dict:
         """Put butterfly: long 1 @K_high, short 2 @K_mid, long 1 @K_low (K_low < K_mid < K_high).
@@ -601,16 +660,18 @@ class UpDownTool(tk.Toplevel):
         Payoff(S) = max(K_high-S,0) - 2*max(K_mid-S,0) + max(K_low-S,0) - net_debit.
         Returns {up, down, ratio} with scenario targets.
         """
-        up_p, dn_p, up_prob, dn_prob = self._targets()
         pH = self._option_price("P", k_high) or 0.0
         pM = self._option_price("P", k_mid)  or 0.0
         pL = self._option_price("P", k_low)  or 0.0
         net_debit = pH - 2.0*pM + pL
-        up_payoff = max(k_high - up_p, 0.0) - 2.0*max(k_mid - up_p, 0.0) + max(k_low - up_p, 0.0) - net_debit
-        dn_payoff = max(k_high - dn_p, 0.0) - 2.0*max(k_mid - dn_p, 0.0) + max(k_low - dn_p, 0.0) - net_debit
-        up = up_payoff * up_prob
-        down = dn_payoff * dn_prob
-        return self._result(up, down)
+        entry = net_debit
+        up_p, dn_p, _, _ = self._targets()
+        up_payoff = max(k_high - up_p, 0.0) - 2.0*max(k_mid - up_p, 0.0) + max(k_low - up_p, 0.0) - entry
+        dn_payoff = max(k_high - dn_p, 0.0) - 2.0*max(k_mid - dn_p, 0.0) + max(k_low - dn_p, 0.0) - entry
+        implied = self._implied_prob_from_caps(entry, up_payoff, dn_payoff)
+        res = self._result(up_payoff, dn_payoff)
+        res["implied"] = implied
+        return res
 
     # =========================
     # Put-Spread Collars (with and without stock)
@@ -621,16 +682,20 @@ class UpDownTool(tk.Toplevel):
         Payoff(S) = [max(K_high-S,0) - max(K_low-S,0)] - max(S-Kc,0) - net_debit.
         Returns {up, down, ratio} with scenario targets.
         """
-        up_p, dn_p, up_prob, dn_prob = self._targets()
         pH = self._option_price("P", put_high) or 0.0
         pL = self._option_price("P", put_low)  or 0.0
         c  = self._option_price("C", call_strike) or 0.0
         net_debit = pH - pL - c
+        entry = net_debit
+        up_p, dn_p, _, _ = self._targets()
         def payoff(S: float) -> float:
             return (max(put_high - S, 0.0) - max(put_low - S, 0.0)) - max(S - call_strike, 0.0) - net_debit
-        up = payoff(up_p) * up_prob
-        down = payoff(dn_p) * dn_prob
-        return self._result(up, down)
+        up_payoff = payoff(up_p)
+        dn_payoff = payoff(dn_p)
+        implied = self._implied_prob_from_caps(entry, up_payoff, dn_payoff)
+        res = self._result(up_payoff, dn_payoff)
+        res["implied"] = implied
+        return res
 
     def strat_put_spread_collar_with_stock(self, put_high: float, put_low: float, call_strike: float) -> dict:
         """Put-spread collar WITH stock: long stock, long put @K_high, short put @K_low, short call @Kc.
@@ -639,18 +704,22 @@ class UpDownTool(tk.Toplevel):
         Returns {up, down, ratio}.
         """
         S0 = self._get_spot()
-        up_p, dn_p, up_prob, dn_prob = self._targets()
         pH = self._option_price("P", put_high) or 0.0
         pL = self._option_price("P", put_low)  or 0.0
         c  = self._option_price("C", call_strike) or 0.0
         net_debit = (pH - pL) - c
+        entry = net_debit
+        up_p, dn_p, _, _ = self._targets()
         def payoff(S: float) -> float:
             stock_pnl = S - S0
             opt = (max(put_high - S, 0.0) - max(put_low - S, 0.0)) - max(S - call_strike, 0.0)
             return stock_pnl + opt - net_debit
-        up = payoff(up_p) * up_prob
-        down = payoff(dn_p) * dn_prob
-        return self._result(up, down)
+        up_payoff = payoff(up_p)
+        dn_payoff = payoff(dn_p)
+        implied = self._implied_prob_from_caps(entry, up_payoff, dn_payoff)
+        res = self._result(up_payoff, dn_payoff)
+        res["implied"] = implied
+        return res
 
     # =========================
     # Call / Put Trees (assumed 1x1x1):
@@ -663,16 +732,18 @@ class UpDownTool(tk.Toplevel):
         Payoff(S) = max(S-K1,0) - max(S-K2,0) - max(S-K3,0) - net_debit.
         Returns {up, down, ratio}. If you prefer a different 1x1x1 convention, we can adjust.
         """
-        up_p, dn_p, up_prob, dn_prob = self._targets()
         c1 = self._option_price("C", k1_long)  or 0.0
         c2 = self._option_price("C", k2_short) or 0.0
         c3 = self._option_price("C", k3_short) or 0.0
         net_debit = c1 - c2 - c3
-        up_payoff = max(up_p - k1_long, 0.0) - max(up_p - k2_short, 0.0) - max(up_p - k3_short, 0.0) - net_debit
-        dn_payoff = max(dn_p - k1_long, 0.0) - max(dn_p - k2_short, 0.0) - max(dn_p - k3_short, 0.0) - net_debit
-        up = up_payoff * up_prob
-        down = dn_payoff * dn_prob
-        return self._result(up, down)
+        entry = net_debit
+        up_p, dn_p, _, _ = self._targets()
+        up_payoff = max(up_p - k1_long, 0.0) - max(up_p - k2_short, 0.0) - max(up_p - k3_short, 0.0) - entry
+        dn_payoff = max(dn_p - k1_long, 0.0) - max(dn_p - k2_short, 0.0) - max(dn_p - k3_short, 0.0) - entry
+        implied = self._implied_prob_from_caps(entry, up_payoff, dn_payoff)
+        res = self._result(up_payoff, dn_payoff)
+        res["implied"] = implied
+        return res
 
     def strat_put_tree_1x1x1(self, k1_short: float, k2_short: float, k3_long: float) -> dict:
         """Put tree 1x1x1 (assumption): short 1 put @K1, short 1 @K2, long 1 @K3 with K1<K2<K3.
@@ -680,16 +751,18 @@ class UpDownTool(tk.Toplevel):
         Payoff(S) = -max(K1-S,0) - max(K2-S,0) + max(K3-S,0) - net_debit.
         Returns {up, down, ratio}. If you prefer a different 1x1x1 convention, we can adjust.
         """
-        up_p, dn_p, up_prob, dn_prob = self._targets()
         p1 = self._option_price("P", k1_short) or 0.0
         p2 = self._option_price("P", k2_short) or 0.0
         p3 = self._option_price("P", k3_long)  or 0.0
         net_debit = -p1 - p2 + p3
-        up_payoff = -max(k1_short - up_p, 0.0) - max(k2_short - up_p, 0.0) + max(k3_long - up_p, 0.0) - net_debit
-        dn_payoff = -max(k1_short - dn_p, 0.0) - max(k2_short - dn_p, 0.0) + max(k3_long - dn_p, 0.0) - net_debit
-        up = up_payoff * up_prob
-        down = dn_payoff * dn_prob
-        return self._result(up, down)
+        entry = net_debit
+        up_p, dn_p, _, _ = self._targets()
+        up_payoff = -max(k1_short - up_p, 0.0) - max(k2_short - up_p, 0.0) + max(k3_long - up_p, 0.0) - entry
+        dn_payoff = -max(k1_short - dn_p, 0.0) - max(k2_short - dn_p, 0.0) + max(k3_long - dn_p, 0.0) - entry
+        implied = self._implied_prob_from_caps(entry, up_payoff, dn_payoff)
+        res = self._result(up_payoff, dn_payoff)
+        res["implied"] = implied
+        return res
 
     # =========================
     # 9) Buy-write (covered call: long stock + short call)
@@ -699,12 +772,15 @@ class UpDownTool(tk.Toplevel):
         Approximates with stock PnL plus call premium (ignores hard cap at K by default). Returns {up, down, ratio}.
         """
         S = self._get_spot()
-        up_p, dn_p, up_prob, dn_prob = self._targets()
         c_px = self._option_price("C", call_strike) or 0.0
-        # Approximation: ignore upside cap; add TODO if you want cap at K
-        up = ((up_p - S) + c_px) * up_prob
-        down = ((S - dn_p) - c_px) * dn_prob
-        return self._result(up, -down)
+        entry = -c_px  # credit
+        up_p, dn_p, _, _ = self._targets()
+        up_payoff = (up_p - S) - max(up_p - call_strike, 0.0) - entry
+        dn_payoff = (dn_p - S) - max(dn_p - call_strike, 0.0) - entry
+        implied = self._implied_prob_from_caps(entry, up_payoff, dn_payoff)
+        res = self._result(up_payoff, -dn_payoff)
+        res["implied"] = implied
+        return res
 
     # =========================
     # 10) Straddle (long call + long put at same K)
@@ -713,15 +789,17 @@ class UpDownTool(tk.Toplevel):
         """Long straddle @K: long call + long put.
         Total cost = C+P from snapshots. UP/DOWN payoffs use intrinsic at scenario prices minus cost. Returns {up, down, ratio}.
         """
-        up_p, dn_p, up_prob, dn_prob = self._targets()
         c = self._option_price("C", strike) or 0.0
         p = self._option_price("P", strike) or 0.0
         cost = c + p
-        up_payoff = max(up_p - strike, 0.0) - cost
-        dn_payoff = max(strike - dn_p, 0.0) - cost
-        up = up_payoff * up_prob
-        down = dn_payoff * dn_prob
-        return self._result(up, down)
+        entry = cost
+        up_p, dn_p, _, _ = self._targets()
+        up_payoff = max(up_p - strike, 0.0) + max(strike - up_p, 0.0) - cost
+        dn_payoff = max(dn_p - strike, 0.0) + max(strike - dn_p, 0.0) - cost
+        implied = self._implied_prob_from_caps(entry, up_payoff, dn_payoff)
+        res = self._result(up_payoff, dn_payoff)
+        res["implied"] = implied
+        return res
 
     # =========================
     # 11) Collar (long stock, long put, short call)
@@ -924,6 +1002,9 @@ class UpDownTool(tk.Toplevel):
             ttk.Label(card, text="Ratio:").grid(row=r0+3, column=0, sticky="w")
             out_rt = ttk.Label(card, text="—", style="OnCard.TLabel")
             out_rt.grid(row=r0+3, column=1, sticky="w")
+            ttk.Label(card, text="Implied Prob:").grid(row=r0+4, column=0, sticky="w")
+            out_ip = ttk.Label(card, text="—", style="OnCard.TLabel")
+            out_ip.grid(row=r0+4, column=1, sticky="w")
 
             def _compute():
                 try:
@@ -935,12 +1016,14 @@ class UpDownTool(tk.Toplevel):
                             raise ValueError(f"Missing/invalid input for '{key}'")
                         args.append(v)
                     res = func(*args) if args else func()
+                    ip = res.get("implied")
                     upv = float(res.get("up", 0.0))
                     dnv = float(res.get("down", 0.0))
                     rtv = float(res.get("ratio", 0.0))
                     out_up.configure(text=f"{upv:,.2f}")
                     out_dn.configure(text=f"{dnv:,.2f}")
                     out_rt.configure(text=f"{rtv:,.2f}")
+                    out_ip.configure(text=(f"{ip:.2%}" if isinstance(ip, float) else "—"))
                 except Exception as e:
                     print(f"[UpDownTool] Compute '{title}' failed: {e}")
                     try:
@@ -949,10 +1032,10 @@ class UpDownTool(tk.Toplevel):
                         pass
 
             btn = ttk.Button(card, text="Compute", command=_compute, style="Accent.TButton")
-            btn.grid(row=r0+4, column=0, columnspan=2, sticky="ew", pady=(6,0))
+            btn.grid(row=r0+5, column=0, columnspan=2, sticky="ew", pady=(6,0))
 
             # track
-            self._strategy_cards[title] = {"frame": card, "in_vars": in_vars, "out": (out_up, out_dn, out_rt), "button": btn}
+            self._strategy_cards[title] = {"frame": card, "in_vars": in_vars, "out": (out_up, out_dn, out_rt, out_ip), "button": btn}
 
             # Grid weights inside card
             for cidx in range(0, 3):
