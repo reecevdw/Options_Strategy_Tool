@@ -1455,6 +1455,22 @@ class OptionsPnL(tk.Toplevel):
             return float(raw) / 100.0
         except Exception:
             return default
+        
+    def _get_total_premium_override(self) -> Optional[float]:
+        """
+        Return the Total Premium Override as a float if the user entered one,
+        otherwise None. Accepts plain numbers or numbers with commas. Empty -> None.
+        """
+        try:
+            txt = (self.total_prem_override_var.get() or "").strip()
+        except Exception:
+            return None
+        if not txt:
+            return None
+        try:
+            return float(txt.replace(",", ""))
+        except Exception:
+            return None
     # ----------------------
     # Row: Ticker / Max / Min
     # ----------------------
@@ -1521,6 +1537,11 @@ class OptionsPnL(tk.Toplevel):
         self.total_prem_entry.bind("<FocusOut>", lambda e: _fmt2(self.total_prem_override_var))
         self.total_prem_entry.bind("<Return>",   lambda e: _fmt2(self.total_prem_override_var))
     
+        try:
+            self.total_prem_override_var.trace_add("write", lambda *_: self._update_summary())
+        except Exception:
+            pass
+
         # Auto-format Max/Min as percentages (1 decimal) on blur or Return
         self.max_entry.bind("<FocusOut>", lambda e: self._format_percent_var(self.max_var))
         self.max_entry.bind("<Return>",   lambda e: self._format_percent_var(self.max_var))
@@ -2520,21 +2541,31 @@ class OptionsPnL(tk.Toplevel):
                 except Exception:
                     net_price_base = net_price_raw
  
-            # Net Premium = sum(q * price * 100) (signed, contract multiplier)
-            net_premium = 0.0
+            # Net Premium (summary): allow UI override, else compute from legs
             try:
-                for leg in legs:
-                    try:
-                        q = float(leg.get("qty", "0") or 0)
-                    except Exception:
-                        q = 0.0
-                    try:
-                        p = float(leg.get("price", "0") or 0)
-                    except Exception:
-                        p = 0.0
-                    net_premium += q * p * 100.0
+                ov = self._get_total_premium_override()
             except Exception:
+                ov = None
+            if ov is not None:
+                net_premium = ov
+                _np_overridden = True
+            else:
+                _np_overridden = False
+                # Net Premium = sum(q * price * 100) (signed, contract multiplier)
                 net_premium = 0.0
+                try:
+                    for leg in legs:
+                        try:
+                            q = float(leg.get("qty", "0") or 0)
+                        except Exception:
+                            q = 0.0
+                        try:
+                            p = float(leg.get("price", "0") or 0)
+                        except Exception:
+                            p = 0.0
+                        net_premium += q * p * 100.0
+                except Exception:
+                    net_premium = 0.0
  
             # Greeks = sum( greek * qty * 100 )  (signed)
             sum_delta = 0.0
@@ -2617,7 +2648,7 @@ class OptionsPnL(tk.Toplevel):
                 edge_unlimited = False
  
             # Show Net Premium (signed, $)
-            lines.append(f"Net Premium: {net_premium:,.0f}")
+            lines.append(f"Net Premium: {net_premium:,.0f}" + (" (override)" if locals().get("_np_overridden") else ""))
  
             # Ratio formatting: (max_pnl - net_premium) / |net_premium|
             date_tag = f" ({maturity_date})" if maturity_date else ""
