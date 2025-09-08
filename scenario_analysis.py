@@ -31,6 +31,13 @@ class ScenarioRunner:
               * If BID missing but MID & ASK exist: infer BID := max(0, 2*MID - ASK)
         If all three of BID/MID/ASK are missing, raise ValueError.
         """
+        # Override path: if caller provided an explicit entry price, use it directly
+        try:
+            if "ENTRY_PRICE_OVERRIDE" in self.data and self.data["ENTRY_PRICE_OVERRIDE"] is not None:
+                ov = float(self.data["ENTRY_PRICE_OVERRIDE"])
+                return ov
+        except Exception:
+            pass
         b = self._sf(self.data.get("PX_BID"))
         m = self._sf(self.data.get("PX_MID"))
         a = self._sf(self.data.get("PX_ASK"))

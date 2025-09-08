@@ -319,11 +319,14 @@ class LegFrame(ttk.Frame):
         self.pct_otm_ent.grid(row=2, column=4, sticky="w")
         self.pct_otm_var.trace_add("write", self._on_pct_otm_changed)
         # Row 2 below: place each directly under its column from row 2
-        # Option Price as a combined label (shows N/A until priced)
-        self.price_var = tk.StringVar(value="")  # raw numeric value for data/validation
-        self.price_label_var = tk.StringVar(value="Option Price: N/A")
-        self.price_lbl = ttk.Label(self, textvariable=self.price_label_var, style="OnCard.TLabel")
-        self.price_lbl.grid(row=3, column=0, columnspan=2, sticky="w")
+        # Option Price: change to user-editable entry with default "N/A"
+        # A small container so we can keep grid placement minimal
+        self.price_var = tk.StringVar(value="N/A")  # "N/A" by default; set to numeric text when priced/overridden
+        price_wrap = ttk.Frame(self, style="Card.TFrame")
+        price_wrap.grid(row=3, column=0, columnspan=2, sticky="w")
+        ttk.Label(price_wrap, text="Option Price:", style="OnCard.TLabel").pack(side="left")
+        self.price_entry = ttk.Entry(price_wrap, textvariable=self.price_var, width=10)
+        self.price_entry.pack(side="left", padx=(6, 0))
         # Root directly below Strike (label at col=1, combo at col=2), matching Strike spacing
         ttk.Label(self, text="Root:", style="OnCard.TLabel").grid(row=3, column=1, sticky="w", padx=(12,4))
         self.root_choices: List[str] = ["refresh data"]
@@ -413,6 +416,8 @@ class LegFrame(ttk.Frame):
         self._on_strike_mode_changed()  # ensure default Strike mode is applied without a click
         # Any change to qty should notify the parent for add/duplicate button enablement
         self.qty_var.trace_add("write", lambda *_: self.on_change())
+        # Any change to price override should mark strategy dirty (so user can Refresh Chart)
+        self.price_var.trace_add("write", lambda *_: self.on_change())
  
     def _on_maturity_selected(self, event=None):
         """Single maturity-selection handler.
@@ -603,24 +608,21 @@ class LegFrame(ttk.Frame):
             self._on_pct_otm_changed()
         self.on_change()
     def set_option_price(self, text: Optional[str]):
-        """Update displayed option price label and store a raw value.
-        - If text is None/empty -> show "Option Price: N/A" and clear stored value
-        - Else -> show "Option Price: <value>" and store value
+        """Set per-leg option price entry.
+        - None/empty -> set UI to "N/A" (treated as no override)
+        - Else -> set to the provided numeric/string value
         """
-        if text is None or str(text).strip() == "":
-            self.price_var.set("")
-            try:
-                self.price_label_var.set("Option Price: N/A")
-            except Exception:
-                pass
-        else:
-            val = str(text)
-            self.price_var.set(val)
-            try:
-                self.price_label_var.set(f"Option Price: {val}")
-            except Exception:
-                pass
-        self.on_change()
+        try:
+            if text is None or str(text).strip() == "":
+                self.price_var.set("N/A")
+            else:
+                self.price_var.set(str(text))
+        except Exception:
+            pass
+        try:
+            self.on_change()
+        except Exception:
+            pass
     def _update_strike_mode_visibility(self):
         mode = self.strike_mode.get()
         if mode == "Strike":
@@ -654,8 +656,13 @@ class LegFrame(ttk.Frame):
             return False
         if self.maturity.get().strip() == "":
             return False
-        # require a resolved price (set when snapshot arrives)
-        if (self.price_var.get() or "").strip() == "":
+        # require a resolved price: a numeric override or auto-populated chain price
+        try:
+            ptxt = (self.price_var.get() or "").strip()
+            if ptxt == "" or ptxt.upper() == "N/A":
+                return False
+            _ = float(ptxt.replace(",", ""))
+        except Exception:
             return False
         # require a full snapshot payload
         if not self.has_full_snapshot():
@@ -1037,7 +1044,23 @@ class OptionsPnL(tk.Toplevel):
                     leg.set_snapshot(copy.deepcopy(snap))
                 except Exception:
                     pass
-                leg.set_option_price(f"{price:.2f}")
+                # Only autopopulate the entry if user hasn't overridden it (i.e., still 'N/A' or non-numeric)
+                try:
+                    cur_txt = (getattr(leg, 'price_var', tk.StringVar(value="")).get() or "").strip()
+                    use_auto = False
+                    if cur_txt == "" or cur_txt.upper() == "N/A":
+                        use_auto = True
+                    else:
+                        try:
+                            _ = float(cur_txt.replace(",", ""))
+                            use_auto = False
+                        except Exception:
+                            use_auto = True
+                    if use_auto:
+                        leg.set_option_price(f"{price:.2f}")
+                except Exception:
+                    # Best effort fallback
+                    leg.set_option_price(f"{price:.2f}")
                 try:
                     leg.set_stats_from_snapshot(snap)
                 except Exception:
@@ -2062,7 +2085,7 @@ class OptionsPnL(tk.Toplevel):
                 continue
         return earliest
  
-    def _refresh_chart(self):
+    def _refresh_chart(self, force: bool = False):
         # Skip any chart work if we are in the middle of a bulk update
         if getattr(self, "_suspend_chart", False):
             return
@@ -2074,7 +2097,7 @@ class OptionsPnL(tk.Toplevel):
         if not getattr(self, "_chart_ready", False):
             return
         # If inputs changed since last update, show placeholder instead of recomputing
-        if getattr(self, "_dirty", False):
+        if getattr(self, "_dirty", False) and not bool(force):
             self._draw_placeholder()
             return
         try:
@@ -2221,6 +2244,8 @@ class OptionsPnL(tk.Toplevel):
                 "ylabel": "P&L ($)",
             }
  
+            # Let the chart's Refresh button drive a full recompute via callback
+            opts["refresh_callback"] = (lambda: self._refresh_chart(force=True))
             self.chart_widget = ChartWidget(container, options=opts)
             self.chart_widget.pack(fill="both", expand=True)
             self.chart_widget._draw_placeholder("Fill in leg(s) and scenario date(s)")
@@ -3178,7 +3203,15 @@ class OptionsPnL(tk.Toplevel):
             except Exception as e:
                 print(f"[ERROR] Could not Apply shock to VOL fields on the local snapshot copy \n{e} ")
                 pass
- 
+            # --- Optional: Per-leg entry price override (from UI entry). If numeric, pass it through ---
+            entry_override: Optional[float] = None
+            try:
+                ptxt = (getattr(leg, 'price_var', tk.StringVar(value="")).get() or "").strip()
+                if ptxt and ptxt.upper() != "N/A":
+                    entry_override = float(ptxt.replace(",", ""))
+            except Exception:
+                entry_override = None
+
             leg_dict = {
                 "SPOT": spot,
                 "STRIKE": strike,
@@ -3203,6 +3236,9 @@ class OptionsPnL(tk.Toplevel):
                 "MAX": max_dec,
                 "INTERVALS": intervals,
             }
+            # attach override if provided
+            if entry_override is not None:
+                leg_dict["ENTRY_PRICE_OVERRIDE"] = entry_override
             data_legs.append(leg_dict)
         if not data_legs:
             return None

@@ -84,6 +84,15 @@ class ChartWidget(ttk.Frame):
         self._x = []               # list[float]
         self._series = {}          # dict[str, list[float]]
  
+        # Optional external refresh callback (lets parent recompute before drawing)
+        self._external_refresh = None
+        try:
+            cb = (self.options.get("refresh_callback") if isinstance(self.options, dict) else None)
+            if cb and callable(cb):
+                self._external_refresh = cb
+        except Exception:
+            pass
+
         # header row (optional small toolbar)
         top = ttk.Frame(self)
         top.pack(fill="x", pady=(0, 6))
@@ -91,7 +100,7 @@ class ChartWidget(ttk.Frame):
         self._title_lbl = ttk.Label(top, textvariable=self._title_var, style=self.options.get("label_style", "Title.TLabel"))
         self._title_lbl.pack(side="left")
         ttk.Button(top, text="Customize…", command=self._open_customize_window).pack(side="left", padx=(6, 0))
-        ttk.Button(top, text="Refresh", command=self.refresh).pack(side="right", padx=(6, 0))
+        ttk.Button(top, text="Refresh", command=self._on_refresh).pack(side="right", padx=(6, 0))
         ttk.Button(top, text="Copy Table", command=self.copy_table_to_clipboard).pack(side="right", padx=(6, 0))
         ttk.Button(top, text="Copy Chart", command=self.copy_chart_to_clipboard).pack(side="right", padx=(6, 0))
         ttk.Button(top, text="Export Excel", command=self.export_to_excel).pack(side="right")
@@ -122,6 +131,16 @@ class ChartWidget(ttk.Frame):
             pass
  
         self._draw_placeholder("No data yet — call set_data(...)")
+
+    def _on_refresh(self):
+        """If an external refresh callback is provided, call it; otherwise refresh current data."""
+        try:
+            if callable(self._external_refresh):
+                self._external_refresh()
+                return
+        except Exception:
+            pass
+        self.refresh()
  
     # ---------- Public API ----------
     def set_data(self, x, series: dict):
@@ -1054,5 +1073,4 @@ class ChartWidget(ttk.Frame):
             pass
  
  
-
 
