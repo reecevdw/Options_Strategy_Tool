@@ -2122,12 +2122,13 @@ class OptionsPnL(tk.Toplevel):
             x_under = [spot * (1.0 + (xpct / 100.0)) for xpct in x] if spot else x
             # Update options from current controls
             try:
-                g = int((self.granularity_var.get() or "5").strip())
+                g = int((self.granularity_var.get() or "10").strip())
             except Exception:
-                g = 5
+                g = 10
             g = max(2, min(g, 25))
             self.chart_widget.update_options({
                 "x_ticks": g,
+                "y_ticks": 10,
                 "show_grid": bool(self.chart_opts.get("show_grid", True)),
                 "show_legend": bool(self.chart_opts.get("show_legend", True)),
                 "y_commas": bool(self.chart_opts.get("y_commas", True)),
@@ -2139,6 +2140,14 @@ class OptionsPnL(tk.Toplevel):
                 "title": f"P&L vs. {(' ' + (self.ticker_var.get() or '').strip()) if self.ticker_var.get() else ''}",
                 "xlabel": "Underlying price ($)",
                 "ylabel": "P&L ($)",
+                # chart layout defaults
+                "margins": (0.05, 0.20),
+                "custom_size": True,
+                "width_px": 1000,
+                "height_px": 2000,
+                # stats defaults
+                "show_line_stats": True,
+                "show_max_in_summary": True,
                 "extra_bottom_pad" : 0.2,
                 "label_ref_line": "Spot Price",
                 "label_show_line_stats": "Show PnL statistics",
@@ -2224,11 +2233,11 @@ class OptionsPnL(tk.Toplevel):
             except Exception:
                 spot = 0.0
             try:
-                g = int((getattr(self, "granularity_var", tk.StringVar(value="5")).get() or "5").strip())
+                g = int((getattr(self, "granularity_var", tk.StringVar(value="10")).get() or "10").strip())
             except Exception:
-                g = 5
+                g = 10
             g = max(2, min(g, 25))
- 
+
             opts = {
                 "show_grid": bool(self.chart_opts.get("show_grid", True)),
                 "show_legend": bool(self.chart_opts.get("show_legend", True)),
@@ -2239,9 +2248,15 @@ class OptionsPnL(tk.Toplevel):
                 "ref_width": float(self.chart_opts.get("spot_line_width", 1.25) or 1.25),
                 "ref_alpha": float(self.chart_opts.get("spot_line_alpha", 0.9) or 0.9),
                 "x_ticks": g,
+                "y_ticks": 10,
                 "title": f"P&L vs. {(' ' + (self.ticker_var.get() or '').strip()) if self.ticker_var.get() else ''}",
                 "xlabel": "Underlying price ($)",
                 "ylabel": "P&L ($)",
+                # chart layout defaults
+                "margins": (0.05, 0.20),
+                "custom_size": True,
+                "width_px": 1000,
+                "height_px": 2000,
             }
  
             # Let the chart's Refresh button drive a full recompute via callback

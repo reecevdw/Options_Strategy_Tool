@@ -19,14 +19,14 @@ DEFAULT_OPTIONS = {
     "show_grid": True,
     "show_legend": True,
     "y_commas": True,
-    "x_ticks": 5,         # number of x ticks
-    "y_ticks": None,      # None = let mpl pick
+    "x_ticks": 10,        # number of x ticks
+    "y_ticks": 10,        # None = let mpl pick
     "margins": (0.05, 0.20),
     # physical sizing (in pixels) and DPI
-    "width_px": None,
-    "height_px": None,
+    "width_px": 1000,
+    "height_px": 2000,
     "dpi": 100,
-    "custom_size": False,
+    "custom_size": True,
     "min_width_px": 600,
     "min_height_px": 400,
     # x-axis integer tick option
@@ -1073,4 +1073,3 @@ class ChartWidget(ttk.Frame):
             pass
  
  
-
