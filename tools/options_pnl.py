@@ -804,6 +804,8 @@ class OptionsPnL(tk.Toplevel):
         # UI is fully constructed; allow change handlers to run
         self._ui_ready = True
         self._chart_win = None
+        self._chart_last_options = None  # remember last applied ChartWidget options
+        self._loaded_chart_options = None  # options loaded from JSON to apply on chart
         self._suspend_chart = False
  
         # Chart recompute gating: require explicit Update Data
@@ -2126,39 +2128,27 @@ class OptionsPnL(tk.Toplevel):
             except Exception:
                 g = 10
             g = max(2, min(g, 25))
+            # Only update dynamic values; preserve user-customized settings
             self.chart_widget.update_options({
                 "x_ticks": g,
-                "y_ticks": 10,
-                "show_grid": bool(self.chart_opts.get("show_grid", True)),
-                "show_legend": bool(self.chart_opts.get("show_legend", True)),
-                "y_commas": bool(self.chart_opts.get("y_commas", True)),
-                "ref_line": bool(self.chart_opts.get("spot_line", True)) and bool(spot),
-                "ref_x": spot if spot else None,
-                "ref_style": str(self.chart_opts.get("spot_line_style", "-.") or "-."),
-                "ref_width": float(self.chart_opts.get("spot_line_width", 1.25) or 1.25),
-                "ref_alpha": float(self.chart_opts.get("spot_line_alpha", 0.9) or 0.9),
                 "title": f"P&L vs. {(' ' + (self.ticker_var.get() or '').strip()) if self.ticker_var.get() else ''}",
                 "xlabel": "Underlying price ($)",
                 "ylabel": "P&L ($)",
-                # chart layout defaults
-                "margins": (0.05, 0.20),
-                "custom_size": True,
-                "width_px": 1000,
-                "height_px": 2000,
-                # stats defaults
-                "show_line_stats": True,
-                "show_max_in_summary": True,
-                "extra_bottom_pad" : 0.2,
-                "label_ref_line": "Spot Price",
-                "label_show_line_stats": "Show PnL statistics",
-                "label_show_max_in_summary": "Display max PnL in summary",
-                "show_custom_message": True,
-                "label_show_custom_message": "Show Option Leg Data on Graph",
+                "ref_line": bool(self.chart_opts.get("spot_line", True)) and bool(spot),
+                "ref_x": spot if spot else None,
+                # keep custom summary message in sync
                 "custom_message": self._format_portfolio_summary_message(strategy),
-                "max_statistic_label" : "Max PnL",
-                "label_x_cross" : "Breakeven",
+                # friendly labels for ref/statistics (do not override toggles)
+                "label_ref_line": "Spot Price",
+                "label_x_cross": "Breakeven",
+                "max_statistic_label": "Max PnL",
             })
             self.chart_widget.set_data(x_under, totals).refresh()
+            # remember latest options
+            try:
+                self._chart_last_options = dict(self.chart_widget.options)
+            except Exception:
+                pass
         except Exception:
             self._draw_placeholder()
  
@@ -2187,7 +2177,28 @@ class OptionsPnL(tk.Toplevel):
             pass
  
         self._chart_creating = True
+        # Reuse if already open
         try:
+            if getattr(self, "_chart_win", None) is not None:
+                try:
+                    if self._chart_win.winfo_exists():
+                        self._chart_win.deiconify(); self._chart_win.lift();
+                        self._chart_ready = True
+                        # apply any loaded chart options
+                        if isinstance(getattr(self, "_loaded_chart_options", None), dict) and hasattr(self, "chart_widget"):
+                            try:
+                                self.chart_widget.update_options(dict(self._loaded_chart_options))
+                                self._chart_last_options = dict(self.chart_widget.options)
+                                self._loaded_chart_options = None
+                            except Exception:
+                                pass
+                        return self._chart_win
+                except Exception:
+                    pass
+
+            # otherwise, (re)create
+            
+            
             # NOTE: give the Toplevel a fixed name so we can always find it
             win = tk.Toplevel(self, name="chart_win")
             self._chart_win = win
@@ -2270,7 +2281,18 @@ class OptionsPnL(tk.Toplevel):
                 self.after_idle(self._widen_chart_popout)
             except Exception:
                 pass
- 
+
+            # Apply loaded or last-known options (preserve user customizations)
+            try:
+                if isinstance(getattr(self, "_loaded_chart_options", None), dict):
+                    self.chart_widget.update_options(dict(self._loaded_chart_options))
+                    self._chart_last_options = dict(self.chart_widget.options)
+                    self._loaded_chart_options = None
+                elif isinstance(getattr(self, "_chart_last_options", None), dict):
+                    self.chart_widget.update_options(dict(self._chart_last_options))
+            except Exception:
+                pass
+
             self._chart_ready = True
             return win
         finally:
@@ -2882,7 +2904,7 @@ class OptionsPnL(tk.Toplevel):
         """Collect current UI data. Only include fully-completed legs."""
         legs = [leg.to_dict() for leg in self.legs if leg.is_complete()]
        
-        return {
+        payload = {
             "mode": self.mode.get(),
             "ticker": self.ticker_var.get().strip(),
             "max": self.max_var.get().strip(),
@@ -2894,6 +2916,15 @@ class OptionsPnL(tk.Toplevel):
             "total_premium_override": getattr(self, 'total_prem_override_var', tk.StringVar(value="")).get().strip() if hasattr(self, 'total_prem_override_var') else "",
             "vol_shock_term": (self.vol_shock_term_var.get() or "").strip(),
         }
+        # Attach chart options snapshot (if available) so user customizations are saved
+        try:
+            if getattr(self, "_chart_ready", False) and hasattr(self, "chart_widget"):
+                payload["chart_options"] = dict(self.chart_widget.options)
+            elif isinstance(getattr(self, "_chart_last_options", None), dict):
+                payload["chart_options"] = dict(self._chart_last_options)
+        except Exception:
+            pass
+        return payload
     def _load_from_data(self, data: Dict[str, Any]):
         # primitives
         self.ticker_var.set(data.get("ticker", ""))
@@ -3083,6 +3114,18 @@ class OptionsPnL(tk.Toplevel):
         self._update_add_leg_button_state()
         self._update_summary()
         self._update_duplicate_button_state()
+        # Load chart options if present; defer applying until chart exists
+        try:
+            opts = data.get("chart_options", None)
+            if isinstance(opts, dict):
+                self._loaded_chart_options = dict(opts)
+                # If chart already up, apply now
+                if getattr(self, "_chart_ready", False) and hasattr(self, "chart_widget"):
+                    self.chart_widget.update_options(dict(self._loaded_chart_options))
+                    self._chart_last_options = dict(self.chart_widget.options)
+                    self._loaded_chart_options = None
+        except Exception:
+            pass
     def _validate_full_strategy(self, data: Dict[str, Any]) -> None:
         def require(cond: bool, msg: str):
             if not cond:
